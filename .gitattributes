@@ -1,0 +1,8 @@
+# Normalize to LF in the repository; check out native on Windows.
+* text=auto eol=lf
+
+# PowerShell scripts must keep CRLF to run on Windows PowerShell 5.1.
+*.ps1 text eol=crlf
+
+# Binary-ish large fixtures: keep them as-is, no diff noise.
+test/fixtures/*.json -diff linguist-generated
