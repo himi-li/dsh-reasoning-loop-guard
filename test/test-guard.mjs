@@ -14,6 +14,7 @@ import {
   blockRepeat,
   createDetector,
   fillerRun,
+  judge,
   kgramCount,
   lineRepeat,
   normalize,
@@ -354,16 +355,129 @@ check(passthrough.length === Math.ceil(healthy.text.length / 40), `healthy strea
 const textOnly = await collect(guardStream(fromText(degenerate.text, 40, "text-delta"), { sessionId: "test" }, DEFAULTS));
 check(textOnly.every((chunk) => chunk.type === "text-delta"), "text-delta output is never judged");
 
+console.log("\n--- 3d. line-repeat needs a count AND a share ---");
+// The two false positives that motivated this criterion, both from the user's
+// own journal. Neither is exotic: they are what reasoning looks like while
+// writing a changelog and while editing a function.
+//
+// These go through `judge()` with the other rules disabled rather than through
+// `feed()`, because the question here is what THIS rule decides — a blob that
+// trips `periodic-run` first would otherwise pass the "does not fire" cases for
+// the wrong reason.
+const ONLY_LINE = { ...DEFAULTS, minUnits: Number.MAX_SAFE_INTEGER, kgramThreshold: Number.MAX_SAFE_INTEGER, blockCount: Number.MAX_SAFE_INTEGER };
+const judgeLine = (text) => judge(text, text, text.length, ONLY_LINE);
+
+{
+  // The real false positive: a changelog being drafted, so the same heading
+  // lands on two lines. 10 normalized characters, twice, in a lot of prose.
+  const changelog = `${"Rewrote the detector to scan the whole window instead of stopping at the first hit. ".repeat(28)}
+## Unreleased
+Added a share floor to the line rule so a repeated heading no longer counts.
+## Unreleased
+Bumped the block rule while I was in there, and left the rest alone.`;
+  const verdict = judgeLine(changelog);
+  check(verdict === null, `a twice-written changelog heading is not a loop (got ${verdict?.rule ?? "null"})`);
+
+  // The other real false positive: an identifier on two lines while editing.
+  const editing = `${"The cache lookup walks the map and returns undefined when the key is absent. ".repeat(30)}
+if (pruneIfNeeded(now)) {
+  await this.flush();
+}
+const stale = pruneIfNeeded(now) ? this.entries : [];`;
+  check(judgeLine(editing) === null, "an identifier on two lines while editing is not a loop");
+
+  // The worst false positive in the corpus, and the reason `lineCount` cannot
+  // drop back to 2: a single 41-character identifier, repeated twice, in a short
+  // stream. Two occurrences are enough for it to reach 19.5% of the window on
+  // length alone, so a share floor by itself would still admit it.
+  //
+  // The filler matters twice over. It has to be genuinely varied (an earlier
+  // version repeated one comment line and was caught by `line-repeat` on THAT
+  // line — a correct fire on a badly built fixture), and it has to be CODE:
+  // normalization strips punctuation, so 2,159 characters of real code reduce to
+  // a few hundred normalized ones, which is exactly why the identifier's share
+  // came out so high. Prose filler would dilute it back below the floor and the
+  // case would prove nothing.
+  const longName = "export function getFilePathByModeInCafs(cafsDir, integrity) {";
+  const codeFiller = Array.from({ length: 20 }, (_unused, i) => `if (cache[${i}] === undefined) { return { id: ${i}, path: join(base, "x") }; }`).join("\n");
+  const twice = `${codeFiller}
+${longName}
+  return join(cafsDir, integrity ? "integrity" : "mode");
+${longName}
+  throw new Error("unreachable");`;
+  const twiceLine = lineRepeat(twice, DEFAULTS.lineMin, 2);
+  check(twiceLine.count === 2, `the long identifier really does occur twice (got ${twiceLine.count})`);
+  check(twiceLine.share > DEFAULTS.lineShare, `and twice is enough to clear the share floor on its own (${(twiceLine.share * 100).toFixed(1)}%)`);
+  const longVerdict = judgeLine(twice);
+  check(longVerdict === null, `one long identifier twice is not a loop (got ${longVerdict?.rule ?? "null"})`);
+
+  // The genuine loop the corpus is full of: a short tic, repeated far more than
+  // the floor, filling the window. This is the shape that must still fire.
+  const loop = "Let me write.\nOK.\n".repeat(12);
+  const loopVerdict = judgeLine(loop);
+  check(loopVerdict?.rule === "line-repeat", `a real tic loop still fires (got ${loopVerdict?.rule ?? "null"})`);
+  check(loopVerdict?.count >= DEFAULTS.lineCount, `the loop reports its real repeat count (${loopVerdict?.count})`);
+  check(loopVerdict?.share >= DEFAULTS.lineShare, `the loop reports the share it fired on (${loopVerdict?.share})`);
+
+  // Count without share: three occurrences of a short line buried in a full
+  // window. The count floor alone would fire here.
+  const sparse = `${"unrelated prose about the task at hand, kept deliberately varied. ".repeat(40)}
+const x = 1;
+more prose in between so the repeats are far apart from one another.
+const x = 1;
+the third occurrence, still nowhere near a tenth of the buffer.
+const x = 1;
+tail prose.`;
+  const sparseVerdict = judgeLine(sparse);
+  check(sparseVerdict === null, `three sparse repeats are not a loop (got ${sparseVerdict?.rule ?? "null"})`);
+
+  // The rule reports the worst line, not the first one to reach the threshold.
+  const worst = `aaaaaaaaaa\n${"bbbbbbbbbb\n".repeat(7)}`;
+  const repeat = lineRepeat(worst, 10, 2);
+  check(repeat.count === 7, `lineRepeat reports the real maximum, not the threshold (got ${repeat.count})`);
+  check(repeat.line === "b".repeat(10), "lineRepeat reports the worst line itself");
+  check(repeat.share > 0 && repeat.share <= 1, `lineRepeat reports a share in (0, 1] (got ${repeat.share})`);
+  check(lineRepeat("short\ntext", 10, 2).count === 0, "lineRepeat ignores lines under minLine");
+  check(lineRepeat("", 10, 2).count === 0, "lineRepeat tolerates an empty buffer");
+
+  // The same fix on the block rule, which shares the defect. The three blocks
+  // must be internally varied: a run of one repeated character is counted at
+  // every offset it can be sliced at (300 identical characters hold 201
+  // overlapping 100-character blocks), which is correct behaviour but useless as
+  // a fixture — it reports hundreds of "occurrences" of a block that appears
+  // once.
+  // The blocks must be aperiodic. `"abcdefghij"[i % 10]` repeated ten times
+  // looks varied but has period 10, so every 100-character slice inside it is
+  // the same block and the count inflates for free.
+  const mkBlock = (seed) => Array.from({ length: 100 }, (_unused, i) => String.fromCharCode(97 + ((i * 7 + i * i * 3 + seed * 11) % 26))).join("");
+  const blockA = mkBlock(1);
+  const blockB = mkBlock(2);
+  check(blockA !== blockB, "the two block fixtures differ");
+  // A single block reports 0, not 1: the scan bails out when the buffer is too
+  // short to hold `minCount` occurrences at all, so "one occurrence" is reported
+  // as "cannot be a repeat" rather than counted and then rejected.
+  check(blockRepeat(blockA, 100, 2).count === 0, "a buffer too short for two blocks reports no repeat");
+  const block = blockRepeat(`${blockA}${blockB}${blockA}${blockB}${blockA}`, 100, 2);
+  check(block.count === 3, `blockRepeat reports the real maximum, not the threshold (got ${block.count})`);
+  check(block.block === blockA, "blockRepeat reports the worst block itself");
+}
+
 console.log("\n--- 4. message rendering (one line per rule) ---");
 for (const verdict of [
   { rule: "periodic-run", atChars: 6400, units: 10, period: 114 },
-  { rule: "block-repeat", atChars: 6400, count: 3, blockLen: 120 },
-  { rule: "line-repeat", atChars: 6400, count: 2, lineLen: 14 },
+  { rule: "block-repeat", atChars: 6400, count: 4, blockLen: 120 },
+  { rule: "line-repeat", atChars: 6400, count: 3, lineLen: 14, share: 0.117 },
   { rule: "kgram-repeat", atChars: 6400, count: 20 },
 ]) {
   const line = failureMessage(verdict, "REASONING_LOOP");
   check(line.includes("重复") && line.includes(String(verdict.atChars)), `message renders for ${verdict.rule}`);
   console.log(line);
+}
+{
+  // A verdict without a share still renders: hand-built or older verdicts must
+  // not produce "占窗口 NaN%".
+  const line = failureMessage({ rule: "line-repeat", atChars: 100, count: 3, lineLen: 12 }, "REASONING_LOOP");
+  check(!line.includes("NaN"), "a verdict with no share renders without NaN");
 }
 
 console.log(`\n${failures === 0 ? "ALL CHECKS PASSED" : `${failures} CHECK(S) FAILED`}`);

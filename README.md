@@ -46,12 +46,25 @@ DSH 随后走它既有的 provider 错误路径处理：本步以一个可见错
 | 判据 | 定义 | 实测峰值（11 正样本 / 166 负样本） | 阈值 |
 | --- | --- | --- | --- |
 | `periodic-run`（主判据） | 缓冲区尾部存在 ≥ `minUnits` 个**连续相同的单元**，周期 p ∈ [8, 400] | 正样本 **0..8** 个单元，负样本 **0..2** | 4 |
-| `block-repeat` | 同一 `blockMin` 字符的块在窗口内出现 ≥ `blockCount` 次（跨行、跨格式） | 正样本 **0..2**，负样本 **0..0** | 3 |
-| `line-repeat` | 同一行（≥ `lineMin` 个字符）出现 ≥ `lineCount` 次 | 正样本 **2..2**，负样本 **0..0** | 2 |
+| `block-repeat` | 同一 `blockMin` 字符的块在窗口内出现 ≥ `blockCount` 次（跨行、跨格式） | 正样本 **0..2**，负样本 **0..0** | 4 |
+| `line-repeat` | 同一行（≥ `lineMin` 个字符）出现 ≥ `lineCount` 次，**且**这些重复行占窗口的比例 ≥ `lineShare` | 正样本 **2..2**，负样本 **0..0** | 3 + 10% |
 | `kgram-repeat` | 末尾 `kgram` 个字符在窗口内出现 ≥ `kgramThreshold` 次 | 正样本 **1..5**，负样本 **1..1** | 12 |
 | `filler-run`（兜底） | **原始**文本末尾连续 ≥ `fillerRun` 个装饰字符（空白 / 标点 / 符号） | 见下文「装饰不是复读」 | 400 |
 
 五条判据是**析取**的：正样本不必触发某一条特定的判据，只要够到任意一条阈值即可。记录在案的 11 次故障里，**2 次由 `periodic-run` 拦下、9 次由 `line-repeat` 拦下**；负样本的最佳比值只到 **0.50**，正样本最低 **1.00**，分离点在 1.00。
+
+### 为什么 `line-repeat` 要两个条件
+
+「同一行出现两次就判循环」在写代码、写文档时是常态——重构时同一个标识符落在两行，写 changelog 时写了两遍 `## Unreleased`，都会中断用户的流。这个问题**没能在 177 样本定标集上暴露**，因为那 11 正 + 166 负**全是散文**，根本不含「边写代码边推理」这一整个失败形态：在那个形态上，0/166 误报说明不了任何事。
+
+真正的定标改在**本机 2799 条真实推理流**（1,920 万字符，含 11 个已知真循环）上做。旧默认在该语料上触发 **180 次**（`line-repeat` 177、`block-repeat` 3），默认新值下只剩 **7 次且全部是真循环**。结论：
+
+- **count 单独不够。** 语料里最常见的口头禅 `Let me write.` 最高能到 17 次，而最弱的真循环是 29 次，只有 1.7 倍余量，不足以押上「打断用户」的代价。
+- **share 是判别量。** 重复行占窗口的比例：健康流最高 **6.1%**，最弱真循环 **10.2%**。取 8% 会放进两条误报，取 12% 会漏掉真循环，所以默认 10%。
+- **count 也不能退回 2。** 一个 41 字符的长标识符只出现 **2 次**就能把 share 顶到 19.5%，光靠 share 地板拦不住它。取 3 与取 4 在语料上完全等价，取 3 留余量。
+- **`block-repeat` 只需把 `blockCount` 从 3 提到 4**：3 会在健康推理**引用长文本**时触发（十六进制 dump、插件名清单、系统提示词复述），4 在语料上只剩 3 次触发且全为真循环。这里刻意**不加** share 地板——从 0% 到 25% 结果都一样，加了只是没有数据支撑的复杂度。
+
+顺带修掉一个语义缺陷：这两条规则原来在第一个达标的单元上就返回，所以日志里的 `count` 永远等于阈值本身，从未反映真实重复次数。现在都改为全扫描取最大重复单元，`count` 因此是真实值。
 
 ### 为什么先做归一化
 
@@ -128,6 +141,9 @@ node --input-type=module -e "import { readPluginMeta } from '@deepseek-ai/dsh-ap
         enabled: true
         minUnits: 4                # periodic-run：连续重复单元数
         kgramThreshold: 12         # kgram-repeat：尾部 k-gram 的出现次数
+        lineCount: 3               # line-repeat：重复行出现次数
+        lineShare: 0.1             # line-repeat：重复行占窗口的最低比例
+        blockCount: 4              # block-repeat：同一块的重复次数
         fillerRun: 400             # filler-run：末尾连续装饰字符数
         minChars: 800              # 低于这么多字符不做判定
         every: 200                 # 每 N 个字符评估一次
@@ -152,8 +168,8 @@ node --input-type=module -e "import { readPluginMeta } from '@deepseek-ai/dsh-ap
 | `periodTail` | `1200` | 周期判据使用的滚动窗口。 |
 | `minPeriod` / `maxPeriod` | `8` / `400` | 周期判据搜索的周期范围。 |
 | `minUnits` | `4` | 触发所需的连续相同单元数。 |
-| `blockMin` / `blockCount` | `100` / `3` | `block-repeat` 的块长度与出现次数。 |
-| `lineMin` / `lineCount` | `10` / `2` | `line-repeat` 的行长度与出现次数。 |
+| `blockMin` / `blockCount` | `100` / `4` | `block-repeat` 的块长度与出现次数。 |
+| `lineMin` / `lineCount` / `lineShare` | `10` / `3` / `0.1` | `line-repeat` 的行长度、出现次数，以及重复行至少要占窗口的比例（见上文「为什么 `line-repeat` 要两个条件」）。 |
 | `fillerRun` | `400` | `filler-run`：末尾连续装饰字符达到多少才判定为卡死。 |
 | `failureCode` | `REASONING_LOOP` | 终止块携带的失败码。 |
 | `journal` | `true` | 把每次触发记录进 JSONL 日志。 |
@@ -169,6 +185,8 @@ node --input-type=module -e "import { readPluginMeta } from '@deepseek-ai/dsh-ap
 ### GUI 里的「触发日志」面板
 
 在 DSH 的**插件**页打开本插件，详情页里会多出一个「触发日志」面板：最近的触发记录（时间、判据、模型、已读字符数、肇事尾巴的预览）、按判据与按模型的汇总、一键清空，以及日志路径的复制按钮。没有触发记录时它显示一句明确的空态文案，而不是一片空白。
+
+列表一次取一页、**最多 100 条**，最新在前。每行始终显示表头（时间、判据、度量、位置、模型），把详情——完整度量、来源（`turn` / `step` / 尝试号）、预览、当时生效的阈值——收在点击之后。最新一条默认展开，因为要解释的通常就是它；工具栏另有**全部展开** / **全部收起**。你自己点开或收起的行会保留选择，直到批量操作覆盖它。
 
 这个面板由两半组成，都在本包内：
 
@@ -195,7 +213,7 @@ node --input-type=module -e "import { readPluginMeta } from '@deepseek-ai/dsh-ap
  "preview":"Let me write. Go. OK. Emit. Now. …","previewRaw":"…",
  "thresholds":{"minChars":800,"every":200,"window":4096,"kgram":64,"kgramThreshold":12,
    "periodTail":1200,"minPeriod":8,"maxPeriod":400,"minUnits":4,"blockMin":100,
-   "blockCount":3,"lineMin":10,"lineCount":2,"fillerRun":400}}
+   "blockCount":4,"lineMin":10,"lineCount":3,"lineShare":0.1,"fillerRun":400}}
 ```
 
 未知字段会直接省略，因此旧记录只是字段更少，不会写成 `null`。几个值得留意的：`ttftMs` 把「模型很慢、然后才开始打转」和「从第一个 token 就在打转」分开；`aborted` 记录判定落地前调用方是否已经放弃；`thresholds` 是产生这次判定的**确切配置**——几个月后要复盘一次误报，靠的就是它；`previewRaw` 只在 `preview` 被截断时出现，是未截断的原文尾巴。
@@ -269,7 +287,7 @@ npm test
 
 - **它不是通用看门狗。** 这几条判据针对的是一种特定的退化形态——尾部连续重复。换一种卡法（比如无限工具调用循环，或者模型在语义上绕圈但并不逐字重复）不会触发它。
 - **首次触发的位置**取决于喂入粒度：最早约 3000 字符，最晚约 56000 字符。记录在案的 11 次故障都会在 10,000 字符以内被拦住。
-- **定标样本是单个会话的 177 条。** 样本量偏小。若实践中出现误报，请优先调高 `minUnits` / `kgramThreshold` / `lineCount`；若误报来自装饰（比如你的模型习惯画很宽的图），调高 `fillerRun`。
+- **定标样本曾是单个会话的 177 条，样本量偏小——已知有盲区。** 它全是散文，不含「边写代码边推理」这一形态，因此在那上面报出的 0/166 误报**不能**外推。`line-repeat` / `block-repeat` 的阈值后来改用 2,799 条真实语料重新定标（见上文「为什么 `line-repeat` 要两个条件」）。若实践中仍出现误报，优先调高 `lineShare`（比例地板）或 `minUnits` / `kgramThreshold`；若误报来自装饰（比如你的模型习惯画很宽的图），调高 `fillerRun`。
 - **只输出装饰的流会被兜底判据拦下，阈值可调。** 见上文「装饰不是复读」：默认 400 已高于实测最宽合法排版（151），但如果你的场景里合法图形更长，把它调高即可。
 - 插件只缓解症状。如果你的 provider 支持更低的推理档位，那才是针对病因，可以与这个护栏一起用。
 

@@ -291,7 +291,7 @@ check(!/\bimport\s/.test(source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*
 console.log("\n--- 11. card helpers ---");
 const helpers = card.__card;
 check(helpers.ROUTE === "/reasoning-loop-guard/log", "the card fetches the host route");
-check(helpers.PAGE_LIMIT === 50, "the card asks for one page");
+check(helpers.PAGE_LIMIT === 100, "the card asks for one page, capped at a hundred records");
 check(helpers.labelsFor("zh") === helpers.STRINGS.zh, "zh selects the Chinese dictionary");
 check(helpers.labelsFor("zh-CN") === helpers.STRINGS.zh, "zh-CN also selects Chinese");
 check(helpers.labelsFor("en") === helpers.STRINGS.en, "en selects the English dictionary");
@@ -766,6 +766,171 @@ console.log("\n--- 14. one rendered record shows everything the journal kept ---
   check(text.includes("minChars=800") && text.includes("minUnits=4"), "the record shows the thresholds in force");
   check(text.includes("effort=max") && text.includes("maxTokens=32000"), "the record shows the request settings");
   check(text.includes("maxPeriod=400") === false, "a record does not invent fields it never stored");
+
+  globalThis.fetch = originalFetch;
+}
+
+console.log("\n--- 15. the record list folds, newest open ---");
+{
+  // With a hundred records on screen an always-expanded list is unreadable, so
+  // the rows fold. The newest fire is the one usually being explained, so it
+  // starts open; every older row keeps its detail behind a click, and the
+  // toolbar can open or close the whole list at once.
+  const record = (index, rule) => ({
+    v: 1,
+    at: 1767225600000 - index * 1000,
+    iso: new Date(1767225600000 - index * 1000).toISOString(),
+    rule,
+    atChars: 1000 + index,
+    failureCode: "REASONING_LOOP",
+    turn: index,
+    step: 1,
+    preview: `material-${index}`,
+    thresholds: { minChars: 800 },
+  });
+  const ENTRIES = [record(0, "periodic-run"), record(1, "line-repeat"), record(2, "filler-run")];
+  const PAYLOAD = {
+    path: "C:\\state\\fires.jsonl",
+    enabled: true,
+    version: "0.2.0",
+    stats: { count: 3, byRule: {}, byModel: {}, earliest: ENTRIES[2].at, latest: ENTRIES[0].at },
+    total: 3,
+    matched: 3,
+    entries: ENTRIES,
+  };
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve(PAYLOAD) });
+
+  const hooks = [];
+  let cursor = 0;
+  const fakeReact = {
+    createElement: (type, props, ...children) => ({
+      type,
+      props: props ?? {},
+      children: children.flat().filter((child) => child !== null && child !== undefined),
+    }),
+    useState: (initial) => {
+      if (cursor < hooks.length) return hooks[cursor++];
+      const slot = [initial, (value) => {
+        slot[0] = typeof value === "function" ? value(slot[0]) : value;
+      }];
+      hooks.push(slot);
+      cursor += 1;
+      return slot;
+    },
+    useRef: (initial) => {
+      if (cursor < hooks.length) return hooks[cursor++];
+      const slot = { current: initial };
+      hooks.push(slot);
+      cursor += 1;
+      return slot;
+    },
+    useCallback: (fn) => {
+      if (cursor < hooks.length) return hooks[cursor++];
+      hooks.push(fn);
+      cursor += 1;
+      return fn;
+    },
+    useEffect: (fn) => {
+      if (cursor < hooks.length) {
+        cursor += 1;
+        return;
+      }
+      hooks.push(null);
+      cursor += 1;
+      fn();
+    },
+    useSyncExternalStore: (_subscribe, read) => read(),
+  };
+  const ui = {
+    Button: function Button() {},
+    IconRefreshOutlineMedium: function IconRefreshOutlineMedium() {},
+    Switch: function Switch() {},
+    Input: function Input() {},
+    SegmentedControl: function SegmentedControl() {},
+    writeClipboard: () => Promise.resolve(),
+  };
+
+  const flatten = (node, out = []) => {
+    if (node === null || node === undefined) return out;
+    if (typeof node === "string" || typeof node === "number") {
+      out.push(String(node));
+      return out;
+    }
+    if (Array.isArray(node)) {
+      node.forEach((child) => flatten(child, out));
+      return out;
+    }
+    if (Array.isArray(node.children)) node.children.forEach((child) => flatten(child, out));
+    return out;
+  };
+
+  const View = helpers.LoopGuardCard(fakeReact, ui, { current: null });
+  cursor = 0;
+  View({ view: "page" });
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+  cursor = 0;
+  const first = View({ view: "page" });
+  const text = flatten(first).join(" | ");
+
+  check(text.includes("periodic-run") && text.includes("line-repeat"), "every folded row still shows its header");
+  check(text.includes("material-0"), "the newest record is open by default");
+  check(text.includes("material-1") === false, "an older record keeps its detail folded");
+  check(text.includes("material-2") === false, "and so does the oldest");
+  check(text.includes("turn=0"), "the newest record shows its provenance");
+  check(text.includes(helpers.STRINGS.en.expandAll), "the toolbar offers expand-all");
+  check(text.includes(helpers.STRINGS.en.collapseAll), "the toolbar offers collapse-all");
+
+  /** Find the props of the row whose header carries this preview marker. */
+  const headerOf = (node, marker, out = []) => {
+    if (node === null || node === undefined || typeof node !== "object") return out;
+    if (Array.isArray(node)) {
+      node.forEach((child) => headerOf(child, marker, out));
+      return out;
+    }
+    if (Array.isArray(node.children)) {
+      if (node.props && node.props.onClick && flatten(node).includes(marker)) out.push(node.props);
+      node.children.forEach((child) => headerOf(child, marker, out));
+    }
+    return out;
+  };
+
+  const rowHeaders = headerOf(first, "line-repeat");
+  check(rowHeaders.length >= 1, "the folded row's header is clickable");
+  check(rowHeaders[0]["aria-expanded"] === "false", "a folded row reports itself collapsed");
+  rowHeaders[0].onClick();
+  cursor = 0;
+  const afterClick = flatten(View({ view: "page" })).join(" | ");
+  check(afterClick.includes("material-1"), "clicking a folded row opens it");
+
+  // The bulk controls must win over per-row choices, or "collapse all" would
+  // silently leave the rows the user had opened still expanded.
+  const buttons = [];
+  const collectButtons = (node) => {
+    if (node === null || node === undefined || typeof node !== "object") return;
+    if (Array.isArray(node)) {
+      node.forEach(collectButtons);
+      return;
+    }
+    if (node.type === ui.Button && node.props && typeof node.props.onClick === "function") {
+      buttons.push(node);
+    }
+    if (Array.isArray(node.children)) node.children.forEach(collectButtons);
+  };
+  // The hook cursor must be rewound before this render too, or the buttons
+  // collected here close over a fresh set of state slots instead of the mounted
+  // ones and clicking them changes nothing a later render can see.
+  cursor = 0;
+  collectButtons(View({ view: "page" }));
+  const collapseAll = buttons.find((node) => flatten(node).includes(helpers.STRINGS.en.collapseAll));
+  check(collapseAll !== undefined, "collapse-all is reachable");
+  collapseAll.props.onClick();
+  cursor = 0;
+  const collapsed = flatten(View({ view: "page" })).join(" | ");
+  check(collapsed.includes("material-0") === false, "collapse-all closes even the newest row");
+  check(collapsed.includes("material-1") === false, "collapse-all closes a row the user had opened");
 
   globalThis.fetch = originalFetch;
 }
