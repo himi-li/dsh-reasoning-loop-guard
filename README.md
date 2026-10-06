@@ -5,6 +5,10 @@
 
 [English](#english) | [简体中文](#简体中文)
 
+> **AI disclosure / AI 使用说明**
+> This project was written with AI assistance — the source code, tests, documentation and commit messages were drafted by an AI agent (DSH Agent, running on DeepSeek Harness) under human direction. The human author defined the requirements, made the design decisions and performed the final review.
+> 本项目由 AI 助手协助整理撰写：源码、测试、文档与提交信息均由 AI 智能体（DSH Agent，运行于 DeepSeek Harness）在人类指导下起草；需求定义、方案决策与最终验收由人类作者完成。
+
 ---
 
 <a id="english"></a>

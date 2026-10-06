@@ -4,6 +4,10 @@
 **Subject:** `dsh-reasoning-loop-guard` v0.1.0
 **Scope:** how the failure was diagnosed, what the guard does, and the evidence that it works.
 
+> **AI disclosure / AI 使用说明**
+> This report was drafted by an AI agent (DSH Agent, running on DeepSeek Harness) under human direction. The human author ran the failing session, defined the requirements and reviewed the conclusions.
+> 本报告由 AI 智能体（DSH Agent，运行于 DeepSeek Harness）在人类指导下整理撰写；触发问题的会话、需求定义与结论验收由人类作者完成。
+
 ---
 
 ## 1. The problem
