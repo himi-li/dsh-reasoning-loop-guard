@@ -1,0 +1,73 @@
+{
+  "name": "dsh-reasoning-loop-guard",
+  "displayName": "DSH Reasoning Loop Guard",
+  "description": "Detect and abort repeating reasoning (thinking-loop stalls) in DSH, plus a fire journal and maintenance tool.",
+  "version": "0.1.0",
+  "type": "module",
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./detector": "./lib/detector.js",
+    "./guard": "./lib/guard.js",
+    "./journal": "./lib/journal.js",
+    "./log-tool": "./lib/log-tool.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "cordis",
+    "reasoning",
+    "thinking",
+    "loop",
+    "repetition",
+    "guard",
+    "watchdog"
+  ],
+  "homepage": "https://github.com/himi-li/dsh-reasoning-loop-guard#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/himi-li/dsh-reasoning-loop-guard.git"
+  },
+  "bugs": {
+    "url": "https://github.com/himi-li/dsh-reasoning-loop-guard/issues"
+  },
+  "author": "himi-li",
+  "license": "MIT",
+  "dshCompat": {
+    "dsh": ">=0.2.0-rc.2 <0.3.0"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.2",
+    "@deepseek-ai/schemastery": "^3.18.2"
+  },
+  "scripts": {
+    "test": "node test/test-guard.mjs && node test/test-journal.mjs && node --import ./test/smoke/register-hook.mjs test/smoke/smoke.mjs && node --import ./test/smoke/register-hook.mjs test/smoke/real-protocol.mjs",
+    "test:guard": "node test/test-guard.mjs",
+    "test:journal": "node test/test-journal.mjs",
+    "test:smoke": "node --import ./test/smoke/register-hook.mjs test/smoke/smoke.mjs",
+    "test:protocol": "node --import ./test/smoke/register-hook.mjs test/smoke/real-protocol.mjs",
+    "test:e2e": "pwsh -File e2e/verify-e2e.ps1",
+    "fixtures:make": "node tools/make-fixtures.mjs",
+    "fixtures:stats": "node tools/fixture-stats.mjs",
+    "check:privacy": "node tools/scan-fixtures.mjs && node tools/scan-repo.mjs",
+    "release:check": "npm test && npm run check:privacy"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

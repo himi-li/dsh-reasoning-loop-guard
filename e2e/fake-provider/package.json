@@ -1,0 +1,14 @@
+{
+  "name": "dsh-tg-fake",
+  "displayName": "Reasoning Loop Guard E2E Fake Provider",
+  "description": "Test-only provider adapter that replays a degenerate reasoning stream, for end-to-end verification of dsh-reasoning-loop-guard.",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "index.js",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

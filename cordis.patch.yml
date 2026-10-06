@@ -1,0 +1,5 @@
+# Load the reasoning-loop guard into the host composition.
+- insert:
+    - id: reasoning-loop-guard
+      name: dsh-reasoning-loop-guard
+      config: {}
