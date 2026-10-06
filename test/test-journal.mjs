@@ -75,6 +75,46 @@ const bare = buildRecord({ verdict, options, config, now: 1767225600000 });
 check(bare.pluginVersion === undefined, "an unknown plugin version is omitted");
 const noPreview = buildRecord({ verdict: { ...verdict, preview: "" }, options, config, now: 1767225600000 });
 check(noPreview.preview === undefined, "an empty preview is omitted");
+{
+  // The richer post-mortem fields: what the stream did over time, which attempt
+  // it was, and the tunables in force. Absent facts stay absent.
+  const rich = buildRecord({
+    verdict,
+    options,
+    config,
+    now: 1767225600000,
+    facts: {
+      elapsedMs: 205000,
+      ttftMs: 1200,
+      fromStartMs: 206200,
+      reasoningChars: 20692,
+      aborted: true,
+      rawTail: "raw tail text",
+      attempt: { attemptId: "attempt-7", turn: 61, step: 12 },
+      cwd: "C:\\work\\proj",
+    },
+    thresholds: { minChars: 800, minUnits: 4 },
+  });
+  check(rich.turn === 61 && rich.step === 12 && rich.attemptId === "attempt-7", "the attempt is recorded");
+  check(rich.elapsedMs === 205000 && rich.ttftMs === 1200, "both timing halves are recorded");
+  check(rich.fromStartMs === 206200 && rich.reasoningChars === 20692, "the totals are recorded");
+  check(rich.aborted === true, "a user abort is recorded");
+  check(rich.cwd === "C:\\work\\proj", "the working directory is recorded");
+  check(rich.previewRaw === "raw tail text", "the raw tail is recorded next to the normalized preview");
+  check(rich.thresholds.minChars === 800 && rich.thresholds.minUnits === 4, "the thresholds in force are recorded");
+  const lean = buildRecord({ verdict, options, config, now: 1767225600000, facts: {} });
+  check(lean.turn === undefined && lean.ttftMs === undefined, "absent facts are omitted, not null");
+  check(lean.aborted === undefined, "a stream that was not aborted carries no abort flag");
+  check(
+    buildRecord({ verdict, options, config, now: 1767225600000, facts: { aborted: false } }).aborted === undefined,
+    "aborted is only recorded when it happened",
+  );
+  check(lean.thresholds === undefined, "a record without a snapshot carries no thresholds");
+  check(
+    buildRecord({ verdict, options, config, now: 1767225600000, facts: { rawTail: verdict.preview } }).previewRaw === undefined,
+    "a raw tail identical to the preview is not duplicated",
+  );
+}
 
 console.log("\n--- 4. parsing tolerates damage ---");
 const damaged = `{"v":1,"at":1}\n\n  \nnot json\n[1,2,3]\n{"v":1,"at":2}\n{"v":1,"at":3`;

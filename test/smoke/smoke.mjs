@@ -60,7 +60,7 @@ const warned = [];
 const toolDefs = [];
 // The journal must never touch the real DSH home from a test.
 const scratch = mkdtempSync(join(tmpdir(), "rlg-smoke-"));
-const live = { ...base, journalPath: join(scratch, "fires.jsonl") };
+const live = { ...base, journalPath: join(scratch, "fires.jsonl"), settingsPath: join(scratch, "config.json") };
 const ctx = {
   logger: { warn: (message) => warned.push(message) },
   on: (event, handler, options) => registered.push({ event, handler, options }),
@@ -73,9 +73,15 @@ const ctx = {
   },
 };
 apply(ctx, live);
-check(registered.length === 1, `exactly one listener registered (got ${registered.length})`);
-check(registered[0]?.event === "llm/stream", "listener is on llm/stream");
-check(registered[0]?.options?.global === true, "listener is registered globally");
+// Two listeners: the stream middleware, and the correlator that learns which
+// attempt a delta belongs to. Their order is not contractual, so pick by event.
+const streamListener = registered.find((entry) => entry.event === "llm/stream");
+const frames = registered.filter((entry) => entry.event === "agent/assistant-stream");
+check(registered.length === 2, `exactly two listeners registered (got ${registered.length})`);
+check(frames.length === 1, `the attempt correlator is wired (got ${frames.length})`);
+check(frames[0]?.options?.global === true, "the correlator is registered globally");
+check(streamListener !== undefined, "listener is on llm/stream");
+check(streamListener?.options?.global === true, "listener is registered globally");
 check(toolDefs.length === 1, `exactly one tool registered (got ${toolDefs.length})`);
 check(toolDefs[0]?.name === "reasoning_loop_log", "tool is reasoning_loop_log");
 check(typeof toolDefs[0]?.output?.render === "function", "tool declares output.render");
@@ -101,7 +107,7 @@ console.log("\n--- middleware guards a real stream ---");
 const DIR = fileURLToPath(new URL("../fixtures", import.meta.url));
 const positives = JSON.parse(readFileSync(join(DIR, "degenerate.json"), "utf8"));
 const negatives = JSON.parse(readFileSync(join(DIR, "healthy.json"), "utf8"));
-const { handler } = registered[0];
+const { handler } = streamListener;
 async function* fromText(text, size) {
   for (let at = 0; at < text.length; at += size) yield { type: "reasoning-delta", index: 0, text: text.slice(at, at + size) };
 }
@@ -161,7 +167,14 @@ check(
   Array.isArray(rendered) && rendered[0]?.type === "text" && typeof rendered[0].text === "string",
   "render returns a text content block",
 );
-check(rendered[0].text.includes("periodic-run") || rendered[0].text.includes("kgram-repeat"), "rendered text names the rule");
+// Any of the four rules may be the one that fired, so assert on the set rather
+// than on the two rules that happened to exist first.
+check(
+  ["periodic-run", "block-repeat", "line-repeat", "kgram-repeat"].some((rule) => rendered[0].text.includes(rule)),
+  `rendered text names the rule (${rendered[0].text.split("\n")[0]})`,
+);
+const renderedDetail = rendered[0].text;
+check(renderedDetail.includes("at="), "rendered text carries the character offset");
 const filtered = await tool.execute({ action: "list", rule: "periodic-run", limit: 100 }, {});
 check(filtered.entries.every((entry) => entry.rule === "periodic-run"), "list filters by rule");
 const stats = await tool.execute({ action: "stats" }, {});

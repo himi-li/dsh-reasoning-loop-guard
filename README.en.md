@@ -41,16 +41,32 @@ The plugin mounts on the `llm/stream` waterfall — the same extension point DSH
 
 DSH then handles it through its existing provider-error path: the step ends with a visible error instead of idling silently.
 
-Two rules are evaluated every `every` characters over rolling buffers:
+Five rules are evaluated every `every` characters over rolling buffers:
 
-| Rule | Definition | Measured (11 positive / 166 negative) | Threshold |
+| Rule | Definition | Measured peak (11 positive / 166 negative) | Threshold |
 | --- | --- | --- | --- |
-| `periodic-run` (primary) | The buffer tail holds ≥ `minUnits` **consecutive identical units** of period p ∈ [8, 400] | positives **5..50** units, negatives **0..2** | 4 |
-| `kgram-repeat` (secondary) | The last `kgram` characters occur ≥ `kgramThreshold` times in the window | positives **20..162**, negatives **1..5** | 12 |
+| `periodic-run` (primary) | The buffer tail holds ≥ `minUnits` **consecutive identical units** of period p ∈ [8, 400] | positives **0..8** units, negatives **0..2** | 4 |
+| `block-repeat` | The same `blockMin`-character block occurs ≥ `blockCount` times in the window (across lines and formatting) | positives **0..2**, negatives **0..0** | 3 |
+| `line-repeat` | The same line (≥ `lineMin` characters) occurs ≥ `lineCount` times | positives **2..2**, negatives **0..0** | 2 |
+| `kgram-repeat` | The last `kgram` characters occur ≥ `kgramThreshold` times in the window | positives **1..5**, negatives **1..1** | 12 |
+| `filler-run` (last resort) | The **raw** text ends with ≥ `fillerRun` consecutive decoration characters (whitespace / punctuation / symbols) | see "Decoration is not a loop" below | 400 |
 
-The periodic rule is primary because it separates the two populations far more sharply; the k-gram rule catches loops whose period falls outside `[minPeriod, maxPeriod]`.
+The rules are **disjunctive**: a positive need not trip any particular one, only reach any threshold. Of the 11 recorded failures, **2 were caught by `periodic-run` and 9 by `line-repeat`**; the best ratio across negatives only reaches **0.50** while the lowest positive reaches **1.00**.
 
-Both rules score **11/11 detections and 0/166 false positives** across six feeding granularities (chunk = 1 / 8 / 40 / 200 / 1000 / 4000).
+### Why the text is normalized first
+
+The first four rules count on the **normalized** text: whitespace, punctuation and symbols are stripped before anything is measured. That is not cosmetic — it fixes a real false positive. The original implementation ran the periodic rule on the raw buffer, so a model drawing a `________` rule became "8 characters repeated 6 times", the guard really did abort that stream, and the journal kept a record with an eight-underscore preview.
+
+The strip class is `[\s\p{P}\p{S}]`. It is a **strict superset** of the hand-written list it replaced: `_` is `\p{Pc}` (connector punctuation) and `─` / `▁` are `\p{So}`, both of which the old list missed. On all 11 real degenerate blobs the two classes produce **byte-identical output** — so widening it removed decoration only, never a character any real loop depended on.
+
+### Decoration is not a loop, but drawing decoration forever is
+
+Normalization costs one thing: a stream emitting **nothing but** decoration leaves the four counting rules with an empty text and could run forever. `filler-run` exists for exactly that case, and is deliberately dull:
+
+- **It is anchored to the end of the text.** A model may legitimately draw a wide table or an ASCII diagram; once it moves on to prose the decoration is no longer at the tail and stops counting. Only an *ongoing* decoration stream can fire — scanning the whole window would fire on any diagram the model had already finished.
+- **The bar sits far above legitimate formatting.** Measured over real shapes, the longest decoration run is **151** characters (a 150-wide ASCII box), then **142** (a 20-column markdown table row), **62** (a setext underline), **5** (a `---` rule); the false positive that motivated the rule was only **8** underscores. The default 400 is 2.6× the widest legitimate shape found, and a genuinely stuck stream crosses it within one `every` interval.
+
+Across six feeding granularities (chunk = 1 / 8 / 40 / 200 / 1000 / 4000) the five rules still score **11/11 detections and 0/166 false positives**.
 
 **Only `reasoning-delta` is measured, never `block-end`** — the latter replays the whole block text, which would manufacture the very repetition being looked for. **`text-delta` is never measured**: ordinary long output (tables, code) can legitimately repeat, and a missed detection is better than a false abort.
 
@@ -112,7 +128,8 @@ Every field can be overridden in the profile's `cordis.patch.yml`:
         enabled: true
         minUnits: 4                # periodic-run: consecutive repeated units
         kgramThreshold: 12         # kgram-repeat: occurrences of the tail k-gram
-        minChars: 1500             # do not judge below this many characters
+        fillerRun: 400             # filler-run: trailing decoration characters
+        minChars: 800              # do not judge below this many characters
         every: 200                 # evaluate every N characters
         failureCode: REASONING_LOOP
 
@@ -127,7 +144,7 @@ Every field can be overridden in the profile's `cordis.patch.yml`:
 | Field | Default | Meaning |
 | --- | --- | --- |
 | `enabled` | `true` | Master switch. When false the plugin registers no stream hook at all. |
-| `minChars` | `1500` | Reasoning shorter than this is never judged. |
+| `minChars` | `800` | Reasoning shorter than this is never judged. |
 | `every` | `200` | Evaluation cadence, in characters. |
 | `window` | `4096` | Rolling window for the k-gram rule. |
 | `kgram` | `64` | Length of the tail fragment the k-gram rule tracks. |
@@ -135,6 +152,9 @@ Every field can be overridden in the profile's `cordis.patch.yml`:
 | `periodTail` | `1200` | Rolling window for the periodic rule. |
 | `minPeriod` / `maxPeriod` | `8` / `400` | Period range searched by the periodic rule. |
 | `minUnits` | `4` | Consecutive identical units needed to fire. |
+| `blockMin` / `blockCount` | `100` / `3` | Block length and occurrence count for `block-repeat`. |
+| `lineMin` / `lineCount` | `10` / `2` | Line length and occurrence count for `line-repeat`. |
+| `fillerRun` | `400` | `filler-run`: trailing decoration characters needed to call it a stall. |
 | `failureCode` | `REASONING_LOOP` | Failure code carried by the terminating chunk. |
 | `journal` | `true` | Record every fire to a JSONL journal. |
 | `journalPath` | `""` | Journal location; empty means the default under `$DSH_HOME`. |
@@ -241,7 +261,8 @@ The generator is seeded and deterministic, so regenerating reproduces byte-ident
 
 - **Not a general-purpose watchdog.** The rules target one specific degenerate shape — contiguous repetition at the tail. A different kind of stall (an infinite tool-call loop, or a model circling semantically without repeating itself literally) will not trigger it.
 - **Where it first fires** depends on feeding granularity: as early as ~3000 characters, as late as ~56000. All eleven recorded failures would have been caught within 10,000 characters.
-- **Calibrated on 177 samples from a single session.** The sample is small. If false positives appear in practice, raise `minUnits` / `kgramThreshold` first.
+- **Calibrated on 177 samples from a single session.** The sample is small. If false positives appear in practice, raise `minUnits` / `kgramThreshold` / `lineCount` first; if they come from decoration (say your model draws very wide diagrams), raise `fillerRun`.
+- **A stream emitting only decoration is caught by the last-resort rule, and its bar is tunable.** See "Decoration is not a loop" above: the default 400 already sits above the widest legitimate formatting measured (151), but raise it if your scenario draws wider.
 - The plugin only mitigates the symptom. If your provider offers a lower reasoning effort, that addresses the cause and can be used alongside this guard.
 
 ## License

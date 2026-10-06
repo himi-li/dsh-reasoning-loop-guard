@@ -1,8 +1,8 @@
 {
   "name": "dsh-reasoning-loop-guard",
   "displayName": "DSH Reasoning Loop Guard",
-  "description": "Detect and abort repeating reasoning (thinking-loop stalls) in DSH, plus a fire journal and maintenance tool.",
-  "version": "0.1.0",
+  "description": "Detect and abort repeating reasoning (thinking-loop stalls) in DSH, plus a detailed fire journal, a GUI panel, and opt-in recovery.",
+  "version": "0.2.0",
   "type": "module",
   "engines": {
     "node": "^22.19.0 || >=24.0.0"
@@ -17,6 +17,9 @@
     "./journal": "./lib/journal.js",
     "./log-route": "./lib/log-route.js",
     "./log-tool": "./lib/log-tool.js",
+    "./recovery": "./lib/recovery.js",
+    "./settings": "./lib/settings.js",
+    "./strip": "./lib/strip.js",
     "./locale/*.json": "./locale/*.json",
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./package.json": "./package.json"
@@ -61,9 +64,12 @@
     "@deepseek-ai/schemastery": "^3.18.2"
   },
   "scripts": {
-    "test": "node test/test-guard.mjs && node test/test-journal.mjs && node test/test-card.mjs && node --import ./test/smoke/register-hook.mjs test/smoke/smoke.mjs && node --import ./test/smoke/register-hook.mjs test/smoke/real-protocol.mjs",
+    "test": "node test/test-guard.mjs && node test/test-journal.mjs && node test/test-settings.mjs && node --import ./test/smoke/register-hook.mjs test/test-recovery.mjs && node test/test-strip.mjs && node test/test-card.mjs && node --import ./test/smoke/register-hook.mjs test/smoke/smoke.mjs && node --import ./test/smoke/register-hook.mjs test/smoke/real-protocol.mjs",
     "test:guard": "node test/test-guard.mjs",
     "test:journal": "node test/test-journal.mjs",
+    "test:settings": "node test/test-settings.mjs",
+    "test:recovery": "node --import ./test/smoke/register-hook.mjs test/test-recovery.mjs",
+    "test:strip": "node test/test-strip.mjs",
     "test:card": "node test/test-card.mjs",
     "test:smoke": "node --import ./test/smoke/register-hook.mjs test/smoke/smoke.mjs",
     "test:protocol": "node --import ./test/smoke/register-hook.mjs test/smoke/real-protocol.mjs"

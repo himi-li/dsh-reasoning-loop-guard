@@ -10,7 +10,9 @@
  *
  * Run: node --import ./test/smoke/register-hook.mjs test/smoke/real-protocol.mjs
  */
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { AssistantStreamAccumulator, assembleAssistantStream, isAgentLoopRequest, markAgentLoopRequest } from "@deepseek-ai/dsh-llm";
 import { apply, Config } from "../../lib/index.js";
@@ -49,8 +51,10 @@ const DIR = fileURLToPath(new URL("../fixtures", import.meta.url));
 const positives = JSON.parse(readFileSync(`${DIR}/degenerate.json`, "utf8"));
 const negatives = JSON.parse(readFileSync(`${DIR}/healthy.json`, "utf8"));
 
-// Build the guard exactly as DSH would. `journal` is switched off so this test
-// never writes outside its own temp dir.
+// Build the guard exactly as DSH would. `journal` is switched off and the
+// settings file is pointed at a scratch path so this test never reads or writes
+// outside its own temp dir.
+const scratch = mkdtempSync(join(tmpdir(), "rlg-protocol-"));
 const registered = [];
 apply(
   {
@@ -58,9 +62,11 @@ apply(
     on: (event, handler, options) => registered.push({ event, handler, options }),
     inject: () => {},
   },
-  { ...Config({}), journal: false },
+  { ...Config({}), journal: false, settingsPath: join(scratch, "config.json") },
 );
-const guard = registered[0].handler;
+// Two listeners now: the stream middleware and the attempt correlator. Their
+// registration order is not contractual, so select by event.
+const guard = registered.find((entry) => entry.event === "llm/stream").handler;
 
 async function* fromText(text, size) {
   // A well-formed provider stream: open a reasoning block, stream deltas.
@@ -114,6 +120,8 @@ console.log("\n--- the request marker distinguishes agent-loop calls ---");
 const marked = markAgentLoopRequest(Object.freeze({ provider: "p", model: "m", messages: [], sessionId: "s-real" }));
 check(isAgentLoopRequest(marked) === true, "a marked request is recognized as an agent-loop request");
 check(isAgentLoopRequest(Object.freeze({ provider: "p", model: "m", messages: [] })) === false, "an unmarked request (compaction/session-title) is not");
+
+rmSync(scratch, { recursive: true, force: true });
 
 console.log(`\n${failures === 0 ? "ALL REAL-PROTOCOL CHECKS PASSED" : `${failures} CHECK(S) FAILED`}`);
 process.exitCode = failures === 0 ? 0 : 1;

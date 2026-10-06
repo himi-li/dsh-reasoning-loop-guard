@@ -1,6 +1,9 @@
 # dependencies
 node_modules/
 
+# pack output
+*.tgz
+
 # OS / editor noise
 .DS_Store
 Thumbs.db

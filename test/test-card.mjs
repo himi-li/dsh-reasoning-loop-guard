@@ -306,8 +306,80 @@ check(helpers.formatWhen({ iso: "2026-10-06T12:34:56.789Z" }) === "2026-10-06 12
 check(helpers.formatWhen({ at: 1767225600000 }) === "2026-01-01 00:00:00", "formatWhen falls back to the epoch");
 check(helpers.formatWhen(undefined) === "?", "formatWhen survives a missing record");
 check(helpers.measureOf({ rule: "periodic-run", period: 64, units: 6 }) === "period=64 · units=6", "measureOf reports a periodic run");
+check(helpers.measureOf({ rule: "block-repeat", blockLen: 120, count: 3 }) === "block=120 · reuses=3", "measureOf reports a repeated block");
+check(helpers.measureOf({ rule: "line-repeat", lineLen: 14, count: 2 }) === "line=14 · reuses=2", "measureOf reports a repeated line");
 check(helpers.measureOf({ rule: "kgram-repeat", count: 20 }) === "count=20", "measureOf reports a k-gram repeat");
+check(helpers.measureOf({ rule: "filler-run", count: 4000 }) === "run=4000 chars", "measureOf reports a decoration run");
 check(helpers.measureOf(undefined) === "", "measureOf survives a missing record");
+check(
+  helpers.REPEAT_RULES.join(",") === "periodic-run,block-repeat,line-repeat,kgram-repeat,filler-run",
+  "the card knows every rule the journal can carry",
+);
+check(helpers.detailOf(undefined) === "", "detailOf survives a missing record");
+check(helpers.detailOf({}) === "", "detailOf stays empty for an old record");
+{
+  const line = helpers.detailOf({
+    turn: 61,
+    step: 12,
+    reasoningEffort: "max",
+    maxTokens: 32000,
+    temperature: 0.6,
+    elapsedMs: 205000,
+    reasoningChars: 20692,
+    cwd: "C:\\work\\proj",
+  });
+  check(line.includes("turn=61") && line.includes("step=12"), "detailOf reports the turn and step");
+  check(line.includes("effort=max") && line.includes("maxTokens=32000"), "detailOf reports the request settings");
+  check(line.includes("elapsed=205000ms") && line.includes("reasoning=20692chars"), "detailOf reports the timing");
+  check(line.includes("cwd=C:\\work\\proj"), "detailOf reports the working directory");
+  check(helpers.detailOf({ turn: 0 }) === "turn=0", "detailOf keeps a zero-valued field");
+}
+{
+  const line = helpers.detailOf({ elapsedMs: 205000, ttftMs: 1200, reasoningChars: 20692 });
+  check(line.includes("ttft=1200ms"), "detailOf separates time-to-first-token from the loop");
+}
+check(helpers.originOf(undefined) === "", "originOf survives a missing record");
+check(helpers.originOf({}) === "", "originOf stays empty for an old record");
+{
+  const line = helpers.originOf({
+    failureCode: "REASONING_LOOP",
+    attemptId: "attempt-7",
+    sessionId: "session-abc",
+    purpose: "chat",
+    pluginVersion: "0.2.0",
+    fromStartMs: 206200,
+  });
+  check(line.includes("code=REASONING_LOOP"), "originOf reports the failure code");
+  check(line.includes("attempt=attempt-7") && line.includes("session=session-abc"), "originOf reports the attempt identity");
+  check(line.includes("purpose=chat") && line.includes("version=0.2.0"), "originOf reports the purpose and build");
+  check(line.includes("sinceStart=206200ms"), "originOf reports the total stream lifetime");
+  check(
+    helpers.originOf({ attemptId: 0, turn: 3 }).includes("attempt=0"),
+    "originOf keeps a zero-valued field",
+  );
+  check(helpers.originOf({ aborted: true }).includes("aborted=user"), "originOf marks a user abort");
+  check(!helpers.originOf({ aborted: false }).includes("aborted"), "originOf stays quiet without an abort");
+}
+check(helpers.thresholdsOf(undefined) === "", "thresholdsOf survives a missing record");
+check(helpers.thresholdsOf({}) === "", "thresholdsOf stays empty when no snapshot was taken");
+check(helpers.thresholdsOf({ thresholds: {} }) === "", "thresholdsOf stays empty for an empty snapshot");
+check(
+  helpers.thresholdsOf({ thresholds: { minChars: 800, minUnits: 4 } }) === "minChars=800  ·  minUnits=4",
+  "thresholdsOf renders the snapshot in force",
+);
+check(helpers.previewText("abc") === "abc", "previewText passes real material through");
+check(helpers.previewText("") === "", "previewText drops an empty preview");
+check(helpers.previewText(undefined) === "", "previewText survives a missing preview");
+{
+  // The real firing recorded on this machine had an eight-space preview, which
+  // used to render as an empty pair of quotes.
+  const shown = helpers.previewText("        ", { blankPreview: "whitespace only" });
+  check(shown === "whitespace only (8)", `previewText labels whitespace-only material (got ${JSON.stringify(shown)})`);
+  check(
+    helpers.previewText("   ", helpers.STRINGS.zh).startsWith("纯空白"),
+    "previewText falls back to the active dictionary",
+  );
+}
 check(helpers.whereOf({ provider: "deepseek", model: "v4" }) === "deepseek / v4", "whereOf joins provider and model");
 check(helpers.whereOf({ model: "v4" }) === "v4", "whereOf tolerates a missing provider");
 check(helpers.whereOf({}) === "—", "whereOf shows a dash when both are missing");
@@ -351,6 +423,9 @@ console.log("\n--- 12. the card renders ---");
   const fakeUi = {
     Button: function Button() {},
     IconRefreshOutlineMedium: function IconRefreshOutlineMedium() {},
+    Switch: function Switch() {},
+    Input: function Input() {},
+    SegmentedControl: function SegmentedControl() {},
     writeClipboard: () => Promise.resolve(),
   };
   const View = helpers.LoopGuardCard(fakeReact, fakeUi, { current: null });
@@ -376,6 +451,323 @@ console.log("\n--- 12. the card renders ---");
   check(text.includes(helpers.STRINGS.en.title) === false, "the page view omits the card's own title");
   check(seen.some((piece) => piece.includes("Fire journal") || piece.includes("Trigger") || piece.includes("Loading")), "the card renders status copy");
   check(typeof View({ view: "summary" }) === "object", "the summary view renders its own frame");
+}
+
+console.log("\n--- 13. the settings panel renders from a loaded store ---");
+{
+  // The panel only exists once the route has answered, so this drives the real
+  // component through a mount: the effect runs, the stubbed fetch resolves, and
+  // the card is re-rendered with the persisted hooks in place. That is the only
+  // way to prove the panel is reachable rather than merely present in source.
+  const PAYLOAD = {
+    path: "C:\\state\\fires.jsonl",
+    enabled: true,
+    version: "0.2.0",
+    stats: { count: 0, byRule: {}, byModel: {}, earliest: null, latest: null },
+    total: 0,
+    matched: 0,
+    entries: [],
+    settings: {
+      path: "C:\\state\\config.json",
+      values: {
+        "recovery.enabled": false,
+        "recovery.message": "",
+        "recovery.maxRetries": 2,
+        "effort.enabled": false,
+        "effort.value": "low",
+        "stripHistory.enabled": false,
+      },
+      stored: {},
+      keys: ["recovery.enabled"],
+    },
+  };
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve(PAYLOAD) });
+
+  const hooks = [];
+  let cursor = 0;
+  const fakeReact = {
+    createElement: (type, props, ...children) => ({
+      type,
+      props: props ?? {},
+      children: children.flat().filter((child) => child !== null && child !== undefined),
+    }),
+    useState: (initial) => {
+      if (cursor < hooks.length) return hooks[cursor++];
+      const slot = [initial, (value) => {
+        slot[0] = typeof value === "function" ? value(slot[0]) : value;
+      }];
+      hooks.push(slot);
+      cursor += 1;
+      return slot;
+    },
+    useRef: (initial) => {
+      if (cursor < hooks.length) return hooks[cursor++];
+      const slot = { current: initial };
+      hooks.push(slot);
+      cursor += 1;
+      return slot;
+    },
+    useCallback: (fn) => {
+      if (cursor < hooks.length) return hooks[cursor++];
+      hooks.push(fn);
+      cursor += 1;
+      return fn;
+    },
+    useEffect: (fn) => {
+      if (cursor < hooks.length) {
+        cursor += 1;
+        return;
+      }
+      hooks.push(null);
+      cursor += 1;
+      fn();
+    },
+    useSyncExternalStore: (_subscribe, read) => read(),
+  };
+  const ui = {
+    Button: function Button() {},
+    IconRefreshOutlineMedium: function IconRefreshOutlineMedium() {},
+    Switch: function Switch() {},
+    Input: function Input() {},
+    SegmentedControl: function SegmentedControl() {},
+    writeClipboard: () => Promise.resolve(),
+  };
+
+  const render = (View) => {
+    cursor = 0;
+    return View({ view: "page" });
+  };
+  /** The display name of an element's component, or its tag for a host node. */
+  const nameOf = (node) =>
+    typeof node.type === "string" ? node.type : (node.type && node.type.name) || "";
+  const types = (node, out = []) => {
+    if (node === null || node === undefined) return out;
+    if (typeof node === "string" || typeof node === "number") return out;
+    if (Array.isArray(node)) {
+      node.forEach((child) => types(child, out));
+      return out;
+    }
+    if (typeof node.type === "function" || typeof node.type === "string") out.push(nameOf(node));
+    if (Array.isArray(node.children)) node.children.forEach((child) => types(child, out));
+    return out;
+  };
+  const propsOf = (node, name, out = []) => {
+    if (node === null || node === undefined || typeof node !== "object") return out;
+    if (Array.isArray(node)) {
+      node.forEach((child) => propsOf(child, name, out));
+      return out;
+    }
+    // The stand-in keeps children beside the props, so a lookup returns both.
+    if (nameOf(node) === name) out.push({ props: node.props, children: node.children ?? [] });
+    if (Array.isArray(node.children)) node.children.forEach((child) => propsOf(child, name, out));
+    return out;
+  };
+  /** The rendered text of one element, flattened. */
+  const textOf = (entry) => {
+    const out = [];
+    const walk = (node) => {
+      if (typeof node === "string" || typeof node === "number") out.push(String(node));
+      else if (Array.isArray(node)) node.forEach(walk);
+    };
+    walk(entry.children);
+    return out.join("");
+  };
+
+  const View = helpers.LoopGuardCard(fakeReact, ui, { current: null });
+  render(View);
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+  const loaded = render(View);
+
+  const loadedTypes = types(loaded);
+  check(loadedTypes.includes("Switch"), "a loaded store renders the toggles");
+  const labels = propsOf(loaded, "Switch").map((entry) => entry.props.label);
+  check(labels.includes(helpers.STRINGS.en.recoveryLabel), "the recovery toggle is offered");
+  check(labels.includes(helpers.STRINGS.en.effortLabel), "the effort toggle is offered");
+  check(labels.includes(helpers.STRINGS.en.stripLabel), "the history-strip toggle is offered");
+  check(
+    propsOf(loaded, "Switch").every((entry) => entry.props.checked === false),
+    "every switch starts off, as the defaults promise",
+  );
+  check(
+    propsOf(loaded, "Input").length === 0,
+    "the recovery inputs stay hidden while recovery is off",
+  );
+
+  // Flip recovery on the way the panel does, then re-render: the message and
+  // retry inputs appear, and the save button turns live.
+  hooks[4][1]((current) => Object.assign({}, current, { "recovery.enabled": true }));
+  const on = render(View);
+  const inputs = propsOf(on, "Input").map((entry) => entry.props);
+  check(inputs.length === 2, "enabling recovery reveals the message and retry inputs");
+  check(
+    inputs.some((props) => props.placeholder === helpers.STRINGS.en.recoveryMessagePlaceholder),
+    "the message input carries its placeholder",
+  );
+  check(
+    inputs.some((props) => props.type === "number" && props.max === 10),
+    "the retry input is a bounded number field",
+  );
+  const buttons = propsOf(on, "Button").map(textOf);
+  check(buttons.includes(helpers.STRINGS.en.save), "the panel offers a save button");
+  check(
+    buttons.includes(helpers.STRINGS.en.refresh),
+    "the journal toolbar is still there beside the panel",
+  );
+  check(
+    propsOf(on, "Switch").some(
+      (entry) => entry.props.label === helpers.STRINGS.en.recoveryLabel && entry.props.checked === true,
+    ),
+    "the flipped toggle reads back as on",
+  );
+
+  globalThis.fetch = originalFetch;
+}
+
+console.log("\n--- 14. one rendered record shows everything the journal kept ---");
+{
+  // The point of this section is the user-visible complaint: the panel showed a
+  // timestamp, a rule and a measure, and nothing else. So drive a real mount
+  // with one rich record and assert on the text a reader would see.
+  const ENTRY = {
+    v: 1,
+    at: 1767225600000,
+    iso: "2026-01-01T00:00:00.000Z",
+    rule: "periodic-run",
+    atChars: 20692,
+    failureCode: "REASONING_LOOP",
+    pluginVersion: "0.2.0",
+    sessionId: "session-abc",
+    provider: "workbuddy",
+    model: "deepseek-v4.1-flash",
+    units: 4,
+    period: 8,
+    turn: 61,
+    step: 12,
+    attemptId: "attempt-7",
+    reasoningEffort: "max",
+    maxTokens: 32000,
+    elapsedMs: 205000,
+    ttftMs: 1200,
+    fromStartMs: 206200,
+    reasoningChars: 20692,
+    cwd: "C:\\work\\proj",
+    preview: "Let me write. Go. Emit. OK.",
+    previewRaw: "Let me write.\nGo. Emit. OK.",
+    thresholds: { minChars: 800, minUnits: 4 },
+  };
+  const PAYLOAD = {
+    path: "C:\\state\\fires.jsonl",
+    enabled: true,
+    version: "0.2.0",
+    stats: { count: 1, byRule: { "periodic-run": 1 }, byModel: {}, earliest: ENTRY.at, latest: ENTRY.at },
+    total: 1,
+    matched: 1,
+    entries: [ENTRY],
+  };
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve(PAYLOAD) });
+
+  const hooks = [];
+  let cursor = 0;
+  const fakeReact = {
+    createElement: (type, props, ...children) => ({
+      type,
+      props: props ?? {},
+      children: children.flat().filter((child) => child !== null && child !== undefined),
+    }),
+    useState: (initial) => {
+      if (cursor < hooks.length) return hooks[cursor++];
+      const slot = [initial, (value) => {
+        slot[0] = typeof value === "function" ? value(slot[0]) : value;
+      }];
+      hooks.push(slot);
+      cursor += 1;
+      return slot;
+    },
+    useRef: (initial) => {
+      if (cursor < hooks.length) return hooks[cursor++];
+      const slot = { current: initial };
+      hooks.push(slot);
+      cursor += 1;
+      return slot;
+    },
+    useCallback: (fn) => {
+      if (cursor < hooks.length) return hooks[cursor++];
+      hooks.push(fn);
+      cursor += 1;
+      return fn;
+    },
+    useEffect: (fn) => {
+      if (cursor < hooks.length) {
+        cursor += 1;
+        return;
+      }
+      hooks.push(null);
+      cursor += 1;
+      fn();
+    },
+    useSyncExternalStore: (_subscribe, read) => read(),
+  };
+  const ui = {
+    Button: function Button() {},
+    IconRefreshOutlineMedium: function IconRefreshOutlineMedium() {},
+    Switch: function Switch() {},
+    Input: function Input() {},
+    SegmentedControl: function SegmentedControl() {},
+    writeClipboard: () => Promise.resolve(),
+  };
+
+  /** Every string a reader would see, flattened. */
+  const flatten = (node, out = []) => {
+    if (node === null || node === undefined) return out;
+    if (typeof node === "string" || typeof node === "number") {
+      out.push(String(node));
+      return out;
+    }
+    if (Array.isArray(node)) {
+      node.forEach((child) => flatten(child, out));
+      return out;
+    }
+    if (Array.isArray(node.children)) node.children.forEach((child) => flatten(child, out));
+    return out;
+  };
+
+  const View = helpers.LoopGuardCard(fakeReact, ui, { current: null });
+  cursor = 0;
+  View({ view: "page" });
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+  cursor = 0;
+  const text = flatten(View({ view: "page" })).join(" | ");
+
+  check(text.includes("2026-01-01 00:00:00"), "the record shows its timestamp");
+  check(text.includes("periodic-run"), "the record shows its rule");
+  check(text.includes("period=8") && text.includes("units=4"), "the record shows its measure");
+  check(text.includes("20692"), "the record shows the offset it fired at");
+  check(text.includes("workbuddy / deepseek-v4.1-flash"), "the record shows the route");
+  check(text.includes("turn=61") && text.includes("step=12"), "the record shows the attempt position");
+  check(text.includes("elapsed=205000ms"), "the record shows the loop duration");
+  check(text.includes("ttft=1200ms"), "the record shows the time to first token");
+  check(text.includes("reasoning=20692chars"), "the record shows the reasoning volume");
+  check(text.includes("cwd=C:\\work\\proj"), "the record shows the working directory");
+  check(text.includes("code=REASONING_LOOP"), "the record shows the failure code");
+  check(text.includes("attempt=attempt-7"), "the record shows which attempt it was");
+  check(text.includes("session=session-abc"), "the record shows which session it was");
+  check(text.includes("version=0.2.0"), "the record shows which build caught it");
+  check(text.includes("sinceStart=206200ms"), "the record shows the total stream lifetime");
+  check(text.includes("Let me write. Go. Emit. OK."), "the record shows the repeating material");
+  check(text.includes(helpers.STRINGS.en.previewLabel), "the preview is labelled");
+  check(text.includes(helpers.STRINGS.en.rawLabel), "the raw tail is labelled");
+  check(text.includes(helpers.STRINGS.en.thresholds), "the threshold block is labelled");
+  check(text.includes("minChars=800") && text.includes("minUnits=4"), "the record shows the thresholds in force");
+  check(text.includes("effort=max") && text.includes("maxTokens=32000"), "the record shows the request settings");
+  check(text.includes("maxPeriod=400") === false, "a record does not invent fields it never stored");
+
+  globalThis.fetch = originalFetch;
 }
 
 rmSync(scratch, { recursive: true, force: true });
