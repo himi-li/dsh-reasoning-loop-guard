@@ -81,6 +81,22 @@ check(toolDefs[0]?.name === "reasoning_loop_log", "tool is reasoning_loop_log");
 check(typeof toolDefs[0]?.output?.render === "function", "tool declares output.render");
 check(typeof toolDefs[0]?.execute === "function", "tool declares execute");
 
+// A fake registry accepts any object, which is exactly how a schema DSH
+// rejects slips through: the real `ctx.tools.register` ends in
+// `assertSupportedJsonSchema(output.schema)` and THROWS, and the plugin then
+// dies at load (`JsonSchemaError: schema.properties.action.required is not
+// supported on type "string"`). Validate against DSH's own validator instead
+// of a replica so this class of bug cannot come back silently.
+const { assertSupportedJsonSchema, validateJsonSchemaValue } = await import("@deepseek-ai/dsh-tools");
+let schemaError = null;
+try {
+  assertSupportedJsonSchema(toolDefs[0]?.parameters);
+  assertSupportedJsonSchema(toolDefs[0]?.output?.schema);
+} catch (error) {
+  schemaError = error;
+}
+check(schemaError === null, `both tool schemas pass DSH's real validator (${schemaError?.message ?? "ok"})`);
+
 console.log("\n--- middleware guards a real stream ---");
 const DIR = fileURLToPath(new URL("../fixtures", import.meta.url));
 const positives = JSON.parse(readFileSync(join(DIR, "degenerate.json"), "utf8"));
@@ -124,7 +140,18 @@ check(falsePositives === 0, `false positives through middleware: ${falsePositive
 
 console.log("\n--- reasoning_loop_log reads what the guard journaled ---");
 const tool = toolDefs[0];
+// Every value the tool returns must satisfy its own published output schema;
+// DSH validates exactly this way before the result reaches the model.
+const conforms = (value, label) => {
+  try {
+    validateJsonSchemaValue(tool.output.schema, value);
+    return null;
+  } catch (error) {
+    return `${label}: ${error.message}`;
+  }
+};
 const listed = await tool.execute({ action: "list", limit: 5 }, {});
+check(conforms(listed, "list") === null, `list result matches the output schema (${conforms(listed, "list") ?? "ok"})`);
 check(listed.path === live.journalPath, "tool reports the configured journal path");
 check(listed.entries.length === 5, `list honours limit (got ${listed.entries.length})`);
 check(listed.total >= positives.length, `list sees every fire (${listed.total} on file)`);
@@ -142,8 +169,11 @@ check(stats.stats.count >= positives.length, `stats counts every fire (got ${sta
 check(typeof stats.stats.byModel === "object" && stats.stats.byModel !== null, "stats aggregates by model");
 const pathOnly = await tool.execute({ action: "path" }, {});
 check(pathOnly.action === "path" && pathOnly.path === live.journalPath, "path action reports the file location");
+check(conforms(pathOnly, "path") === null, `path result matches the output schema (${conforms(pathOnly, "path") ?? "ok"})`);
+check(conforms(stats, "stats") === null, `stats result matches the output schema (${conforms(stats, "stats") ?? "ok"})`);
 const cleared = await tool.execute({ action: "clear" }, {});
 check(cleared.removed === true, "clear removes the journal");
+check(conforms(cleared, "clear") === null, `clear result matches the output schema (${conforms(cleared, "clear") ?? "ok"})`);
 check((await tool.execute({ action: "stats" }, {})).stats.count === 0, "the journal is empty after clear");
 
 console.log("\n--- disabled config is inert ---");

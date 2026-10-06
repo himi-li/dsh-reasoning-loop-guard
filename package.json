@@ -8,17 +8,22 @@
     "node": "^22.19.0 || >=24.0.0"
   },
   "main": "lib/index.js",
+  "icon": "assets/icon.svg",
   "exports": {
     ".": "./lib/index.js",
+    "./client": "./lib/client.js",
     "./detector": "./lib/detector.js",
     "./guard": "./lib/guard.js",
     "./journal": "./lib/journal.js",
+    "./log-route": "./lib/log-route.js",
     "./log-tool": "./lib/log-tool.js",
+    "./locale/*.json": "./locale/*.json",
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./package.json": "./package.json"
   },
   "files": [
     "lib",
+    "locale",
     "assets",
     "cordis.patch.yml",
     "README.md",
@@ -56,15 +61,21 @@
     "@deepseek-ai/schemastery": "^3.18.2"
   },
   "scripts": {
-    "test": "node test/test-guard.mjs && node test/test-journal.mjs && node --import ./test/smoke/register-hook.mjs test/smoke/smoke.mjs && node --import ./test/smoke/register-hook.mjs test/smoke/real-protocol.mjs",
+    "test": "node test/test-guard.mjs && node test/test-journal.mjs && node test/test-card.mjs && node --import ./test/smoke/register-hook.mjs test/smoke/smoke.mjs && node --import ./test/smoke/register-hook.mjs test/smoke/real-protocol.mjs",
     "test:guard": "node test/test-guard.mjs",
     "test:journal": "node test/test-journal.mjs",
+    "test:card": "node test/test-card.mjs",
     "test:smoke": "node --import ./test/smoke/register-hook.mjs test/smoke/smoke.mjs",
     "test:protocol": "node --import ./test/smoke/register-hook.mjs test/smoke/real-protocol.mjs"
   },
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [],
+      "immediately": true
     }
   }
 }

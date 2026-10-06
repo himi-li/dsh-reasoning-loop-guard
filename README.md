@@ -7,7 +7,7 @@
   </picture>
 </p>
 
-[![tests](https://img.shields.io/badge/tests-4%20suites%20passing-brightgreen)](#测试)
+[![tests](https://img.shields.io/badge/tests-5%20suites%20passing-brightgreen)](#测试)
 [![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
 **简体中文** | [English](README.en.md)
@@ -67,6 +67,9 @@ npm install github:himi-li/dsh-reasoning-loop-guard
 
 ```json
 {
+  "dependencies": {
+    "dsh-reasoning-loop-guard": "github:himi-li/dsh-reasoning-loop-guard"
+  },
   "dsh": {
     "profile": {
       "bundles": ["@deepseek-ai/dsh-base", "...", "dsh-reasoning-loop-guard"]
@@ -75,7 +78,9 @@ npm install github:himi-li/dsh-reasoning-loop-guard
 }
 ```
 
-或者直接在 profile 的 `cordis.patch.yml` 里挂载（本包自带的就是这一份）：
+**`dependencies` 和 `bundles` 两处都要写。** DSH 的插件页只列出存在于 profile `dependencies` 里的包（这是「已安装」的判据），而 `bundles` 决定它是否被装载。只写 `bundles` 也能跑，但卡片不会出现在插件页上。
+
+装载方式有两种。用上面那行 `dependencies`（配合 `pnpm install`）即可；也可以直接在 profile 的 `cordis.patch.yml` 里挂载（本包自带的 `cordis.patch.yml` 就是这一份）：
 
 ```yaml
 - insert:
@@ -84,7 +89,16 @@ npm install github:himi-li/dsh-reasoning-loop-guard
       config: {}
 ```
 
-补丁会热重载，无需重启 DSH。
+**改完需要重启 DSH，而不是只刷新页面。** 有两个各自独立的原因：
+
+1. 宿主对 `node_modules` 的 HMR 是**关闭**的（`dsh-hmr` 的 `ignored` 默认含 `**/node_modules`），所以包内文件的变动不会被监听到。
+2. Node 的 ESM 解析器在进程内**永久缓存**每个包的 `exports` 映射。本包新增 `locale/*.json` 这类 export 之后，**同一个宿主进程里永远解析不到它们**——表现为插件页上的标题一直是英文包名，而图标（直读文件、不走 exports）却正常。只有重启才能让宿主重读 manifest。
+
+**给包作者看的验证命令**，无需启动 DSH 即可确认元数据能被正确读出（`icon`/`locale` 是否生效）：
+
+```powershell
+node --input-type=module -e "import { readPluginMeta } from '@deepseek-ai/dsh-app-boot'; console.log(readPluginMeta('dsh-reasoning-loop-guard', 'file:///' + process.argv[1].replace(/\\/g,'/') + '/'))" "$PWD"
+```
 
 ## 配置
 
@@ -130,7 +144,24 @@ npm install github:himi-li/dsh-reasoning-loop-guard
 
 `validateConfig()` 会拒绝那些**会静默失效**的配置——`kgram > window`、`minPeriod >= maxPeriod`、`periodTail < 2 * maxPeriod`、`failureCode` 为空、`every` 非正数等等——并在报错信息里点名字段。
 
-## 触发日志与 `reasoning_loop_log` 工具
+## 触发日志、GUI 日志面板与 `reasoning_loop_log` 工具
+
+### GUI 里的「触发日志」面板
+
+在 DSH 的**插件**页打开本插件，详情页里会多出一个「触发日志」面板：最近的触发记录（时间、判据、模型、已读字符数、肇事尾巴的预览）、按判据与按模型的汇总、一键清空，以及日志路径的复制按钮。没有触发记录时它显示一句明确的空态文案，而不是一片空白。
+
+这个面板由两半组成，都在本包内：
+
+| 文件 | 作用 |
+| --- | --- |
+| [`lib/log-route.js`](lib/log-route.js) | 向宿主的 `webServer` 注册 `GET /reasoning-loop-guard/log`，返回 `{ path, enabled, version, stats, total, matched, entries }`；支持 `limit` / `rule` / `sessionId` / `since` 查询，`POST {"action":"clear"}` 清空。 |
+| [`lib/client.js`](lib/client.js) | 手写的惰性 CJS bundle（**零构建步骤**），以包名为键注册 `plugins.bundle.config` 槽位并渲染卡片。运行时只向平台种子表 `require` 两个词：`react` 与 `@deepseek-ai/dsh-client-ui-primitives`。 |
+
+**路由自带同源栅栏。** 宿主的 `webServer` 不提供任何鉴权，所以这道栅栏由插件自己写：非回环 `Host`、`Sec-Fetch-Site: cross-site`、或与 `Host` 不同源的 `Origin`，一律 `403`。请求体上限 16 KiB（超出回 `413` 并断开），非 `GET`/`POST` 回 `405`。你的浏览器本来就带着 DSH 的渲染进程访问令牌，因此同源栅栏不会妨碍正常使用——但一个恰好能访问到该端口的其他程序会被挡在外面。
+
+> 若你的宿主根本没提供 `webServer` 服务，`ctx.inject(["webServer"], …)` 会**静默跳过**路由注册，护栏本体照常工作。这是刻意的：一个诊断面板不该让护栏变成 inactive。
+
+### 触发日志
 
 护栏每触发一次，就向 `$DSH_HOME/dsh-reasoning-loop-guard/fires.jsonl` 追加一行 JSON：
 
@@ -176,6 +207,7 @@ npm test
 | --- | --- |
 | [`test/test-guard.mjs`](test/test-guard.mjs) | 六种 chunk 大小下的检测器定标、分离度、`guardStream` 协议一致性（恰好一个终止 `finish`、提前停止、已中止信号的处理、健康流不被改动）、消息渲染。 |
 | [`test/test-journal.mjs`](test/test-journal.mjs) | `$DSH_HOME` 解析、preview 截断、记录形状、解析容错、过滤、`stats` 聚合、轮转，以及「日志故障永不抛异常」这条保证。 |
+| [`test/test-card.mjs`](test/test-card.mjs) | 日志路由的同源栅栏判定、方法与查询参数、上限与关闭态、注册走服务，以及客户端 bundle 的协议形态（在 `window.__ModuleLoader__` 伪装下真的加载它）与卡片的纯函数。 |
 | [`test/smoke/smoke.mjs`](test/smoke/smoke.mjs) | 用桩宿主驱动真实的 `apply()`：配置校验、全局只注册一个 `llm/stream` 监听器、工具注册，以及该工具的端到端行为。 |
 | [`test/smoke/real-protocol.mjs`](test/smoke/real-protocol.mjs) | 真实的 `@deepseek-ai/dsh-llm` 不变量校验门，断言护栏的输出是一条**合法**的流。 |
 

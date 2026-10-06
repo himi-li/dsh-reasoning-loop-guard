@@ -7,7 +7,7 @@
   </picture>
 </p>
 
-[![tests](https://img.shields.io/badge/tests-4%20suites%20passing-brightgreen)](#testing)
+[![tests](https://img.shields.io/badge/tests-5%20suites%20passing-brightgreen)](#testing)
 [![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
 [简体中文](README.md) | **English**
@@ -67,6 +67,9 @@ Then register the bundle in the profile's `package.json`:
 
 ```json
 {
+  "dependencies": {
+    "dsh-reasoning-loop-guard": "github:himi-li/dsh-reasoning-loop-guard"
+  },
   "dsh": {
     "profile": {
       "bundles": ["@deepseek-ai/dsh-base", "...", "dsh-reasoning-loop-guard"]
@@ -75,7 +78,9 @@ Then register the bundle in the profile's `package.json`:
 }
 ```
 
-Or mount it directly in the profile's `cordis.patch.yml` (this is what the package ships):
+**Both `dependencies` and `bundles` matter.** DSH's Plugins page only lists packages present in the profile's `dependencies` (that is how "installed" is decided), while `bundles` decides whether it is loaded at all. Registering only in `bundles` still runs the guard, but no card appears on the Plugins page.
+
+There are two ways to mount it. The `dependencies` line above (plus `pnpm install`) is one; you can also mount it directly in the profile's `cordis.patch.yml` (which is what this package ships):
 
 ```yaml
 - insert:
@@ -84,7 +89,16 @@ Or mount it directly in the profile's `cordis.patch.yml` (this is what the packa
       config: {}
 ```
 
-The patch reloads live; no DSH restart is required.
+**A DSH restart is required after installing or upgrading — refreshing the page is not enough.** Two independent reasons:
+
+1. The host's HMR ignores `node_modules` entirely (`dsh-hmr`'s `ignored` defaults to `**/node_modules`), so file changes inside a package are never noticed.
+2. Node's ESM resolver caches each package's `exports` map for the lifetime of the process. After a package adds an export such as `locale/*.json`, that export stays unresolvable **in the running host** — the visible symptom is a card that keeps showing the bare English package name while its icon (read straight from disk, bypassing `exports`) renders fine. Only a restart makes the host re-read the manifest.
+
+**A verification one-liner for package authors**, confirming the metadata resolves without starting DSH:
+
+```powershell
+node --input-type=module -e "import { readPluginMeta } from '@deepseek-ai/dsh-app-boot'; console.log(readPluginMeta('dsh-reasoning-loop-guard', 'file:///' + process.argv[1].replace(/\\/g,'/') + '/'))" "$PWD"
+```
 
 ## Configuration
 
@@ -130,7 +144,24 @@ Every field can be overridden in the profile's `cordis.patch.yml`:
 
 `validateConfig()` rejects configurations that would **silently fail to work** — `kgram > window`, `minPeriod >= maxPeriod`, `periodTail < 2 * maxPeriod`, an empty `failureCode`, a non-positive `every`, and so on — with a message naming the offending field.
 
-## Fire journal and the `reasoning_loop_log` tool
+## Fire journal, the GUI log panel, and the `reasoning_loop_log` tool
+
+### The "Trigger log" panel in the GUI
+
+Open this plugin on DSH's **Plugins** page and its detail view gains a trigger-log panel: recent fires (time, rule, model, characters read, a preview of the offending tail), totals by rule and by model, a one-click clear, and a copy button for the journal path. With no fires yet it says so explicitly instead of rendering a blank box.
+
+Two halves, both shipped in this package:
+
+| File | Role |
+| --- | --- |
+| [`lib/log-route.js`](lib/log-route.js) | Registers `GET /reasoning-loop-guard/log` on the host's `webServer`, returning `{ path, enabled, version, stats, total, matched, entries }`; supports `limit` / `rule` / `sessionId` / `since`, and `POST {"action":"clear"}` to wipe it. |
+| [`lib/client.js`](lib/client.js) | A hand-written lazy-CJS bundle (**no build step**) that registers the `plugins.bundle.config` slot keyed by package name and renders the card. At runtime it `require`s exactly two platform seed words: `react` and `@deepseek-ai/dsh-client-ui-primitives`. |
+
+**The route carries its own same-origin fence.** The host's `webServer` provides no authentication, so the plugin writes one: a non-loopback `Host`, `Sec-Fetch-Site: cross-site`, or an `Origin` that does not match `Host` all get `403`. Request bodies are capped at 16 KiB (beyond that: `413` and a dropped socket), and any method other than `GET`/`POST` gets `405`. Your browser already carries DSH's renderer access token, so the fence never gets in the way of normal use — but another program that happens to reach the port is kept out.
+
+> If your host provides no `webServer` service at all, `ctx.inject(["webServer"], …)` **silently skips** route registration and the guard itself keeps working. That is deliberate: a diagnostic panel should never be able to make the guard inactive.
+
+### Fire journal
 
 Every time the guard fires it appends one JSON line to `$DSH_HOME/dsh-reasoning-loop-guard/fires.jsonl`:
 
@@ -170,12 +201,13 @@ So "has this been firing, and on which model?" is one tool call away, rather tha
 npm test
 ```
 
-Four suites, all of which must pass:
+Five suites, all of which must pass:
 
 | Suite | What it covers |
 | --- | --- |
 | [`test/test-guard.mjs`](test/test-guard.mjs) | Detector calibration across six chunk sizes, separation margins, `guardStream` protocol conformance (exactly one terminating `finish`, early stop, aborted-signal handling, healthy streams untouched), message rendering. |
 | [`test/test-journal.mjs`](test/test-journal.mjs) | `$DSH_HOME` resolution, preview clipping, record shape, parse tolerance, filtering, `stats` aggregation, rotation, and the guarantee that journal failures never throw. |
+| [`test/test-card.mjs`](test/test-card.mjs) | The log route's same-origin fence decisions, method and query handling, limits and the disabled state, registration through the service, plus the client bundle's protocol shape (actually imported under a `window.__ModuleLoader__` facade) and the card's pure functions. |
 | [`test/smoke/smoke.mjs`](test/smoke/smoke.mjs) | The real `apply()` driven through a stub host: config validation, exactly one `llm/stream` listener registered globally, tool registration, and the tool's behaviour end to end. |
 | [`test/smoke/real-protocol.mjs`](test/smoke/real-protocol.mjs) | The real `@deepseek-ai/dsh-llm` invariant gate, asserting the guard's output is a *legal* stream. |
 

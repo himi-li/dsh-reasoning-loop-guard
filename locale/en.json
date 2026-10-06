@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Reasoning Loop Guard",
+    "description": "Detects and aborts repeating reasoning in DSH streams, with a fire journal and a log viewer."
+  }
+}

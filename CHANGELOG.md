@@ -3,6 +3,19 @@
 All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Web GUI 日志卡片** (`lib/client.js`)。插件页上以包名为键注册 `plugins.bundle.config` 槽位，详情页因此出现一个「触发日志」面板：最近的触发记录、按判据/按模型的汇总、一键清空，以及日志路径的复制按钮。零构建——手写的惰性 CJS bundle，运行时只向平台种子表要 `react` 与 `@deepseek-ai/dsh-client-ui-primitives`。
+- **宿主侧日志路由** (`lib/log-route.js`)。`GET /reasoning-loop-guard/log` 返回 `{ path, enabled, version, stats, total, matched, entries }`，支持 `limit` / `rule` / `sessionId` / `since` 查询；`POST` 只接受 `{"action":"clear"}`。路由自带**同源回环栅栏**：非回环 `Host`、`Sec-Fetch-Site: cross-site`、或跨源 `Origin` 一律 403——宿主 webServer 本身不提供鉴权，这道栅栏必须由插件自己写。
+- **插件元数据**：`icon`（`assets/icon.svg`，即 README 里那枚靶心的无背景版本）与 `locale/en.json` + `locale/zh.json`，因此插件页显示中文标题「推理循环守卫」与中文描述。
+- **第三套单元测试** `test/test-card.mjs`：同源栅栏的 15 条判定、路由的方法/查询/上限/关闭态行为、注册走服务，以及客户端 bundle 的协议形态与卡片纯函数。
+
+### Fixed
+
+- **`reasoning_loop_log` 的输出 schema 会让插件整个 `apply()` 失败。** DSH 的 JSON-schema 校验器不支持在带 `type` 的属性上挂 `required`（`JsonSchemaError: unsupported JSON schema: schema.properties.action.required is not supported on type "string"`），而工具的 `output.schema` 是在注册时校验的，于是异常直接打断了 `apply()`——**连带该函数后面二十行的日志路由也一起没注册上**。现在 schema 收敛到校验器真正支持的子集。
+
 ## [0.1.0] - 2026-10-06
 
 Initial release.
