@@ -1,5 +1,12 @@
 # dsh-reasoning-loop-guard
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/logo-dark.svg">
+    <img src="assets/logo.svg" alt="DSH Reasoning Loop Guard" width="150">
+  </picture>
+</p>
+
 [![tests](https://img.shields.io/badge/tests-4%20suites%20passing-brightgreen)](#测试)
 [![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
