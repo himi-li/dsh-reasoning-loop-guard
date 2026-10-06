@@ -1,12 +1,6 @@
 # dependencies
 node_modules/
 
-# end-to-end harness scratch: isolated DSH_HOME, rebuilt on every run
-e2e-home/
-
-# e2e run logs
-e2e/run-*.log
-
 # OS / editor noise
 .DS_Store
 Thumbs.db

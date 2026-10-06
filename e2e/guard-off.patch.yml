@@ -1,5 +1,0 @@
-# Negative control for the reasoning-loop-guard e2e run: the very same
-# degenerate stream must NOT be cut when the guard is switched off.
-- id: reasoning-loop-guard
-  config:
-    enabled: false

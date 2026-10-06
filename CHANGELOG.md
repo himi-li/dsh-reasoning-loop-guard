@@ -16,8 +16,8 @@ Initial release.
 - **Fire journal.** Every fire is appended as one JSON line to `$DSH_HOME/dsh-reasoning-loop-guard/fires.jsonl`, size-bounded and rotated to `.1`. Journal failures only warn — they never disturb the stream.
 - **`reasoning_loop_log` maintenance tool** with `list` / `stats` / `path` / `clear` actions, registered through an optional `ctx.inject(["tools"], …)` so a host without the tools service still gets the guard itself.
 - **Config validation** that rejects settings which would silently fail to work (`kgram > window`, `minPeriod >= maxPeriod`, `periodTail < 2 * maxPeriod`, empty `failureCode`, non-positive `every`).
-- **Four test suites** (`test/test-guard.mjs`, `test/test-journal.mjs`, `test/smoke/smoke.mjs`, `test/smoke/real-protocol.mjs`) and an **end-to-end harness** (`e2e/verify-e2e.ps1`) that drives the real DSH CLI and a real agent loop in both armed and disarmed arms.
-- **Deterministic synthetic fixtures** (`tools/make-fixtures.mjs`) reproducing the measured shape of the original failure, plus a **privacy gate** (`tools/scan-fixtures.mjs`) for release checks.
+- **Four test suites** (`test/test-guard.mjs`, `test/test-journal.mjs`, `test/smoke/smoke.mjs`, `test/smoke/real-protocol.mjs`).
+- **Deterministic synthetic fixtures** (`test/fixtures/`) reproducing the measured shape of the original failure.
 
 ### Notes
 

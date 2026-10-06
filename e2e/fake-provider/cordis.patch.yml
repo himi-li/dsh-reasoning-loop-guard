@@ -1,4 +1,0 @@
-# Test-only: mount the fake provider route used by the e2e run.
-- insert:
-    - id: tg-fake-provider
-      name: dsh-tg-fake

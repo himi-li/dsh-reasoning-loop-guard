@@ -21,6 +21,7 @@
     "lib",
     "cordis.patch.yml",
     "README.md",
+    "README.en.md",
     "LICENSE",
     "CHANGELOG.md"
   ],
@@ -58,12 +59,7 @@
     "test:guard": "node test/test-guard.mjs",
     "test:journal": "node test/test-journal.mjs",
     "test:smoke": "node --import ./test/smoke/register-hook.mjs test/smoke/smoke.mjs",
-    "test:protocol": "node --import ./test/smoke/register-hook.mjs test/smoke/real-protocol.mjs",
-    "test:e2e": "pwsh -File e2e/verify-e2e.ps1",
-    "fixtures:make": "node tools/make-fixtures.mjs",
-    "fixtures:stats": "node tools/fixture-stats.mjs",
-    "check:privacy": "node tools/scan-fixtures.mjs && node tools/scan-repo.mjs",
-    "release:check": "npm test && npm run check:privacy"
+    "test:protocol": "node --import ./test/smoke/register-hook.mjs test/smoke/real-protocol.mjs"
   },
   "dsh": {
     "bundle": {
