@@ -12,7 +12,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - **插件元数据**：`icon`（`assets/icon.svg`，即 README 里那枚靶心的无背景版本）与 `locale/en.json` + `locale/zh.json`，因此插件页显示中文标题「推理循环守卫」与中文描述。
 - **第三套单元测试** `test/test-card.mjs`：同源栅栏的 15 条判定、路由的方法/查询/上限/关闭态行为、注册走服务，以及客户端 bundle 的协议形态与卡片纯函数。
 - **新判据 `filler-run`（兜底）** —— 原始文本末尾连续 ≥ `fillerRun`（默认 400）个装饰字符（空白 / 标点 / 符号）即判定为卡死。归一化把装饰从计数判据里剥掉之后，一个**只**输出装饰的流本来可以无限跑下去；这条判据专门堵这个洞，并刻意做得很迟钝：它**锚定在文本末尾**（模型画完图接着写散文就不再计数），且门槛远高于任何合法排版（实测最宽合法形状 151 字符，见下）。
-- **触发记录更详细**：新增 `ttftMs`（首 token 延迟）、`aborted`（调用方是否已中止）、`thresholds`（触发时生效的 13 项阈值快照）、`previewRaw`（未截断的原文尾巴）、`turn` / `step` / `attemptId` / `cwd` / `reasoningChars` / `elapsedMs` / `fromStartMs`。卡片与 `reasoning_loop_log` 工具都会渲染这些字段。
+- **触发记录更详细**：新增 `ttftMs`（首 token 延迟）、`aborted`（调用方是否已中止）、`thresholds`（触发时生效的 14 项阈值快照）、`previewRaw`（未截断的原文尾巴）、`turn` / `step` / `attemptId` / `cwd` / `reasoningChars` / `elapsedMs` / `fromStartMs`。卡片与 `reasoning_loop_log` 工具都会渲染这些字段。
 
 ### Fixed
 

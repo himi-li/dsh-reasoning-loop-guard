@@ -187,10 +187,18 @@ Every time the guard fires it appends one JSON line to `$DSH_HOME/dsh-reasoning-
 
 ```json
 {"v":1,"at":1760000000000,"iso":"2026-10-06T15:20:00.000Z","rule":"periodic-run",
- "atChars":3120,"failureCode":"REASONING_LOOP","pluginVersion":"0.1.0",
- "sessionId":"...","provider":"...","model":"...","units":6,"period":64,
- "preview":"Let me write. Go. OK. Emit. Now. …"}
+ "atChars":3120,"failureCode":"REASONING_LOOP","pluginVersion":"0.2.0",
+ "sessionId":"...","provider":"...","model":"...","purpose":"...",
+ "reasoningEffort":"max","turn":17,"step":2,"attemptId":"...","cwd":"...",
+ "units":6,"period":64,"elapsedMs":4210,"fromStartMs":18730,"ttftMs":14520,
+ "reasoningChars":3120,"aborted":false,
+ "preview":"Let me write. Go. OK. Emit. Now. …","previewRaw":"…",
+ "thresholds":{"minChars":800,"every":200,"window":4096,"kgram":64,"kgramThreshold":12,
+   "periodTail":1200,"minPeriod":8,"maxPeriod":400,"minUnits":4,"blockMin":100,
+   "blockCount":3,"lineMin":10,"lineCount":2,"fillerRun":400}}
 ```
+
+Fields are omitted when they are unknown, so an older record simply carries fewer of them. The ones worth knowing: `ttftMs` separates "slow model that then started spinning" from "spinning from the first token"; `aborted` records whether the caller had already given up before the verdict landed; `thresholds` is the exact configuration that produced the verdict, which is what you need to reason about a false positive months later; `previewRaw` is the untruncated tail whenever `preview` clipped it.
 
 The journal is bounded (`journalMaxBytes`, default 512 KiB → rotates to `fires.jsonl.1`), every write is wrapped in try/catch, and a journal failure **only warns — it never disturbs the stream**. Set `journal: false` to disable it entirely.
 

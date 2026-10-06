@@ -19,7 +19,7 @@ import {
   normalize,
   periodicRun,
 } from "../lib/detector.js";
-import { guardStream, failureMessage } from "../lib/guard.js";
+import { guardStream, failureMessage, thresholdSnapshot } from "../lib/guard.js";
 
 const DIR = fileURLToPath(new URL("./fixtures", import.meta.url));
 const positives = JSON.parse(readFileSync(`${DIR}/degenerate.json`, "utf8"));
@@ -277,6 +277,20 @@ console.log("\n--- 3b. the firing report ---");
   check(facts?.reasoningChars === verdict.atChars, "the measured character count matches the verdict");
   check(facts?.aborted === false, "a stream nobody aborted is reported as such");
   check(typeof facts?.rawTail === "string" && facts.rawTail.length > 0, "the raw tail is captured for the journal");
+}
+{
+  // The snapshot exists so a fire can be explained months later. That only
+  // holds if it covers every knob that can change a verdict: a threshold added
+  // to DEFAULTS but forgotten here would make old records unexplainable, which
+  // is exactly how `fillerRun` went missing once.
+  const snapshot = thresholdSnapshot(DEFAULTS);
+  const missing = Object.keys(DEFAULTS).filter((key) => !(key in snapshot));
+  check(
+    missing.length === 0,
+    `the snapshot covers every detection threshold (missing: ${missing.join(", ") || "none"})`,
+  );
+  check(snapshot.fillerRun === DEFAULTS.fillerRun, "the snapshot carries the filler-run bar");
+  check(snapshot.minChars === DEFAULTS.minChars, "the snapshot carries the minimum length");
 }
 {
   // The abort flag must describe *this* stream, not the platform default.

@@ -187,10 +187,18 @@ node --input-type=module -e "import { readPluginMeta } from '@deepseek-ai/dsh-ap
 
 ```json
 {"v":1,"at":1760000000000,"iso":"2026-10-06T15:20:00.000Z","rule":"periodic-run",
- "atChars":3120,"failureCode":"REASONING_LOOP","pluginVersion":"0.1.0",
- "sessionId":"...","provider":"...","model":"...","units":6,"period":64,
- "preview":"Let me write. Go. OK. Emit. Now. …"}
+ "atChars":3120,"failureCode":"REASONING_LOOP","pluginVersion":"0.2.0",
+ "sessionId":"...","provider":"...","model":"...","purpose":"...",
+ "reasoningEffort":"max","turn":17,"step":2,"attemptId":"...","cwd":"...",
+ "units":6,"period":64,"elapsedMs":4210,"fromStartMs":18730,"ttftMs":14520,
+ "reasoningChars":3120,"aborted":false,
+ "preview":"Let me write. Go. OK. Emit. Now. …","previewRaw":"…",
+ "thresholds":{"minChars":800,"every":200,"window":4096,"kgram":64,"kgramThreshold":12,
+   "periodTail":1200,"minPeriod":8,"maxPeriod":400,"minUnits":4,"blockMin":100,
+   "blockCount":3,"lineMin":10,"lineCount":2,"fillerRun":400}}
 ```
+
+未知字段会直接省略，因此旧记录只是字段更少，不会写成 `null`。几个值得留意的：`ttftMs` 把「模型很慢、然后才开始打转」和「从第一个 token 就在打转」分开；`aborted` 记录判定落地前调用方是否已经放弃；`thresholds` 是产生这次判定的**确切配置**——几个月后要复盘一次误报，靠的就是它；`previewRaw` 只在 `preview` 被截断时出现，是未截断的原文尾巴。
 
 日志是有界的（`journalMaxBytes`，默认 512 KiB → 轮转为 `fires.jsonl.1`），每次写入都包在 try/catch 里，日志故障**只会告警，绝不影响流**。设为 `journal: false` 可整体关闭。
 
