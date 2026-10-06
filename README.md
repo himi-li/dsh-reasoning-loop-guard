@@ -49,9 +49,11 @@ DSH 随后走它既有的 provider 错误路径处理：本步以一个可见错
 
 ## 安装
 
+本包尚未发布到 npm，从 GitHub 源码安装：
+
 ```powershell
 # 在你的 DSH profile 目录下执行（例如 ~/.dsh/profiles/desktop）
-npm install dsh-reasoning-loop-guard
+npm install github:himi-li/dsh-reasoning-loop-guard
 ```
 
 然后在 profile 的 `package.json` 里注册 bundle：

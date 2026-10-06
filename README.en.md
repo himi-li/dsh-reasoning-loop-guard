@@ -49,9 +49,11 @@ Both rules score **11/11 detections and 0/166 false positives** across six feedi
 
 ## Installation
 
+This package is not published to npm yet — install it from GitHub:
+
 ```powershell
 # from your DSH profile directory (e.g. ~/.dsh/profiles/desktop)
-npm install dsh-reasoning-loop-guard
+npm install github:himi-li/dsh-reasoning-loop-guard
 ```
 
 Then register the bundle in the profile's `package.json`:
