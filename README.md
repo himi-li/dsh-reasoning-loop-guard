@@ -155,6 +155,18 @@ node --input-type=module -e "import { readPluginMeta } from '@deepseek-ai/dsh-ap
         journalMaxBytes: 524288
         journalPreviewChars: 120
         logTool: true              # 注册 reasoning_loop_log 工具
+
+        # 功能开关（见下文「功能开关」）
+        settingsPath: ""           # 默认：$DSH_HOME/dsh-reasoning-loop-guard/config.json（只在 patch 里设）
+        recovery:
+          enabled: false           # 中断后追加纠正消息并重跑同一步
+          message: ""              # 留空使用内置文案
+          maxRetries: 2            # 每步最多重试几次（0–10）
+        effort:
+          enabled: false           # 按档位回写 reasoningEffort
+          value: low               # off | low | high | max
+        stripHistory:
+          enabled: false           # 剥离历史轮的思维链，只留活跃轮
 ```
 
 | 字段 | 默认值 | 含义 |
@@ -177,8 +189,31 @@ node --input-type=module -e "import { readPluginMeta } from '@deepseek-ai/dsh-ap
 | `journalMaxBytes` | `524288` | 日志超过该字节数后轮转为 `<path>.1`。 |
 | `journalPreviewChars` | `120` | 每条记录保存的「肇事尾巴」字符数。 |
 | `logTool` | `true` | 注册 `reasoning_loop_log` 工具。 |
+| `settingsPath` | `""` | 功能开关的配置文件位置；留空表示 `$DSH_HOME` 下的默认路径。 |
+| `recovery.enabled` | `false` | 中断一次流之后，追加一条纠正消息并重跑同一步。 |
+| `recovery.message` | `""` | 纠正消息正文；留空使用内置文案。 |
+| `recovery.maxRetries` | `2` | 每步最多自动恢复几次（0–10）。 |
+| `effort.enabled` | `false` | 按档位回写请求的 `reasoningEffort`。 |
+| `effort.value` | `low` | 强度档位：`off` / `low` / `high` / `max`。 |
+| `stripHistory.enabled` | `false` | 剥离历史轮的思维链，只保留活跃轮。 |
 
-`validateConfig()` 会拒绝那些**会静默失效**的配置——`kgram > window`、`minPeriod >= maxPeriod`、`periodTail < 2 * maxPeriod`、`failureCode` 为空、`every` 非正数等等——并在报错信息里点名字段。
+`validateConfig()` 会拒绝那些**会静默失效**的配置——`kgram > window`、`minPeriod >= maxPeriod`、`periodTail < 2 * maxPeriod`、`failureCode` 为空、`every` 非正数等等——并在报错信息里点名字段。功能开关还会额外校验：`settingsPath` 必须是字符串、`recovery.maxRetries` 必须是非负整数、`effort.value` 必须在 `off` / `low` / `high` / `max` 之内。
+
+### 功能开关
+
+上面最后七行（`settingsPath` 与三个开关的六个字段）也可以在 **GUI 里改**——但 `settingsPath` 例外：它只在 patch 里设，GUI 把它**只读**地显示出来。在插件页打开本插件，详情页的「触发日志」面板下方有四个区块——**自动恢复**（开关 + 纠正消息 + 每步重试次数）、**降低思考强度**（开关 + 强度档位）、**剥离历史思维链**（开关），以及只读的**配置文件**路径。改完点保存，界面会显示「设置已保存」，值写进 `$DSH_HOME/dsh-reasoning-loop-guard/config.json`。
+
+**三个开关全部默认关闭**，在 patch 里和 GUI 里都一样。它们都改变了护栏之外的行为，所以默认取保守的一侧：装上插件只得到「检测并中断」，想要更多得显式打开。
+
+**保存后不需要重启。** `config.json` 是**逐键**覆盖 patch 配置的，而且每次读取都重新折叠，所以**下一次请求就生效**。这一点和代码改动不同——`node_modules` 里的代码不会热重载（见「已知边界」）。
+
+**GUI 只能写这六个键，检测阈值永远留在 patch 里。** 这样「这次触发的阈值到底来自哪个文件」不会变成一个需要猜的问题——日志里那份 `thresholds` 快照永远对应 patch。写入是原子的（临时文件 + rename），读侧对缺失或损坏的 `config.json` 一律回落到基线，**绝不抛异常**：一个写坏的设置文件最多让开关回到默认值，不会让护栏变成 inactive。
+
+三个开关各自的机制与代价：
+
+- **自动恢复**（`recovery.*`）。守卫中断一次流之后，向会话追加一条纠正消息并重跑同一步。**为什么必须先追加消息**：重试会重发**完全相同的请求**（`buildRequest` 从会话日志重新推导，被中断的 `assistant/attempt` 不参与推导），所以不带新消息的裸重试必然复现同一个循环。重试预算按**步**计（`sessionId:turn:step`）——按会话计会让一轮坏掉就永久禁用，按 attempt 计会让 `maxRetries` 失去意义。这条消息带的是**产出方自己的 `source.kind`**（会话格式 v4 拒绝 `kind: "plugin"`），副作用是 chat UI 会把它渲染成上下文注记而不是用户气泡。本臂的任何内部故障都落到 `next()`，失败保持与没有插件时一样终局。
+- **降低思考强度**（`effort.*`）。按档位回写请求的 `reasoningEffort`。这是**针对病因**的一臂——复读是推理档位太高时的症状，护栏本身只缓解症状——所以如果你的 provider 支持更低的档位，这一臂比护栏更根本。它必须跑在 `dsh-agent` 自己的 `agent/request` 监听器之外（核心会重新推导 provider / model / `reasoningEffort` 并丢掉我们设的值），因此用 `{ prepend: true }` 注册并在 `next()` 之后回写。
+- **剥离历史思维链**（`stripHistory.enabled`）。DeepSeek 适配器会把历史 assistant 消息的 `reasoning` 作为线上 `thinking` 块回传，于是第 n 轮模型会读到 1..n-1 轮自己的思维链（包括开启循环的那句「让我再验证一遍」），回放历史还会撑大 prompt 前缀、损害 KV 缓存复用。**边界按「最后一个真实用户轮」切**：之前的 reasoning 是历史、丢弃，之后属于活跃轮、保留。搞错不是装饰性 bug——DeepSeek 会直接拒绝移除了活跃轮 reasoning 的 thinking 请求（`The reasoning_content in the thinking mode must be passed back to the API.`），而 DSH 把工具结果作为 `user` 角色消息投递，所以朴素的「最后一条 user 消息」边界会落在工具循环中间并剥掉活跃轮。**它的代价要明说**：交给 `llm/stream` 的 request 对象是冻结的且 `next()` 不接参数，改 `messages` 只能带着新 options 对象重入 runtime，而该新对象不在 `AGENT_LOOP_REQUESTS` weak set 里，于是 `dsh-agent-loop` 的「请求仍与会话日志推导一致」不变量对它被跳过——**这正是它默认关闭的原因**，也是这一臂只删内容、绝不发明内容的原因。
 
 ## 触发日志、GUI 日志面板与 `reasoning_loop_log` 工具
 
@@ -192,7 +227,7 @@ node --input-type=module -e "import { readPluginMeta } from '@deepseek-ai/dsh-ap
 
 | 文件 | 作用 |
 | --- | --- |
-| [`lib/log-route.js`](lib/log-route.js) | 向宿主的 `webServer` 注册 `GET /reasoning-loop-guard/log`，返回 `{ path, enabled, version, stats, total, matched, entries }`；支持 `limit` / `rule` / `sessionId` / `since` 查询，`POST {"action":"clear"}` 清空。 |
+| [`lib/log-route.js`](lib/log-route.js) | 向宿主的 `webServer` 注册 `GET /reasoning-loop-guard/log`，返回 `{ path, enabled, version, settings, stats, total, matched, entries }`；支持 `limit` / `rule` / `sessionId` / `since` 查询，`POST` 只接受 `{"action":"clear"}` 与 `{"action":"set","patch":{…}}` 两个显式变更（都是破坏性的，**刻意不能由链接或预取触发**）。 |
 | [`lib/client.js`](lib/client.js) | 手写的惰性 CJS bundle（**零构建步骤**），以包名为键注册 `plugins.bundle.config` 槽位并渲染卡片。运行时只向平台种子表 `require` 两个词：`react` 与 `@deepseek-ai/dsh-client-ui-primitives`。 |
 
 **路由自带同源栅栏。** 宿主的 `webServer` 不提供任何鉴权，所以这道栅栏由插件自己写：非回环 `Host`、`Sec-Fetch-Site: cross-site`、或与 `Host` 不同源的 `Origin`，一律 `403`。请求体上限 16 KiB（超出回 `413` 并断开），非 `GET`/`POST` 回 `405`。你的浏览器本来就带着 DSH 的渲染进程访问令牌，因此同源栅栏不会妨碍正常使用——但一个恰好能访问到该端口的其他程序会被挡在外面。
@@ -247,12 +282,15 @@ node --input-type=module -e "import { readPluginMeta } from '@deepseek-ai/dsh-ap
 npm test
 ```
 
-四套测试，必须全部通过：
+八套测试，必须全部通过：
 
 | 套件 | 覆盖内容 |
 | --- | --- |
 | [`test/test-guard.mjs`](test/test-guard.mjs) | 六种 chunk 大小下的检测器定标、分离度、`guardStream` 协议一致性（恰好一个终止 `finish`、提前停止、已中止信号的处理、健康流不被改动）、消息渲染。 |
 | [`test/test-journal.mjs`](test/test-journal.mjs) | `$DSH_HOME` 解析、preview 截断、记录形状、解析容错、过滤、`stats` 聚合、轮转，以及「日志故障永不抛异常」这条保证。 |
+| [`test/test-settings.mjs`](test/test-settings.mjs) | 功能开关的两条承重性质：保存对**下一次** `get()` 可见（每次折叠），以及坏文件表现得像全新安装、绝不像崩溃。 |
+| [`test/test-recovery.mjs`](test/test-recovery.mjs) | 自动恢复臂的契约全在**何时**行动：禁用时让路、只认护栏自己的失败、返回 `{kind:"retry"}` 前必须追加良构消息、必须耗尽每步预算、任何内部故障都要落到 `next()`。 |
+| [`test/test-strip.mjs`](test/test-strip.mjs) | 剥离历史思维链臂的边界判定——每条检查都因「剥掉活跃轮 reasoning 会被 DeepSeek 拒绝」这一失败模式而存在。 |
 | [`test/test-card.mjs`](test/test-card.mjs) | 日志路由的同源栅栏判定、方法与查询参数、上限与关闭态、注册走服务，以及客户端 bundle 的协议形态（在 `window.__ModuleLoader__` 伪装下真的加载它）与卡片的纯函数。 |
 | [`test/smoke/smoke.mjs`](test/smoke/smoke.mjs) | 用桩宿主驱动真实的 `apply()`：配置校验、全局只注册一个 `llm/stream` 监听器、工具注册，以及该工具的端到端行为。 |
 | [`test/smoke/real-protocol.mjs`](test/smoke/real-protocol.mjs) | 真实的 `@deepseek-ai/dsh-llm` 不变量校验门，断言护栏的输出是一条**合法**的流。 |
@@ -275,7 +313,7 @@ npm test
 
 也就是说：护栏**确实把上游生成器截断了**（而不是等流跑完才报个错）；而关掉护栏后，同一条流完整跑完、毫发无损——这排除了「测试装置本身是坏的」这种可能。
 
-> 这套端到端装置属于开发脚手架，不随包发布。上面四套测试才是随包交付的。
+> 这套端到端装置属于开发脚手架，不随包发布。上面八套测试才是随包交付的。
 
 ## 测试夹具
 
@@ -289,7 +327,8 @@ npm test
 - **首次触发的位置**取决于喂入粒度：最早约 3000 字符，最晚约 56000 字符。记录在案的 11 次故障都会在 10,000 字符以内被拦住。
 - **定标样本曾是单个会话的 177 条，样本量偏小——已知有盲区。** 它全是散文，不含「边写代码边推理」这一形态，因此在那上面报出的 0/166 误报**不能**外推。`line-repeat` / `block-repeat` 的阈值后来改用 2,799 条真实语料重新定标（见上文「为什么 `line-repeat` 要两个条件」）。若实践中仍出现误报，优先调高 `lineShare`（比例地板）或 `minUnits` / `kgramThreshold`；若误报来自装饰（比如你的模型习惯画很宽的图），调高 `fillerRun`。
 - **只输出装饰的流会被兜底判据拦下，阈值可调。** 见上文「装饰不是复读」：默认 400 已高于实测最宽合法排版（151），但如果你的场景里合法图形更长，把它调高即可。
-- 插件只缓解症状。如果你的 provider 支持更低的推理档位，那才是针对病因，可以与这个护栏一起用。
+- **护栏本身只缓解症状。** 如果你的 provider 支持更低的推理档位，那才是针对病因——可以打开上面的**降低思考强度**开关（见「功能开关」），或者在你的 DSH 配置里直接调低。
+- **三个功能开关默认关闭，代价在各自小节里写明。** 尤其 `stripHistory` 会让 `dsh-agent-loop` 的「请求仍与会话日志推导一致」不变量被跳过（见「功能开关」），`recovery` 会向会话追加一条消息。这些都是默认关闭的原因，不是可以忽略的细节。
 
 ## 许可证
 

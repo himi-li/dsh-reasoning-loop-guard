@@ -155,6 +155,18 @@ Every field can be overridden in the profile's `cordis.patch.yml`:
         journalMaxBytes: 524288
         journalPreviewChars: 120
         logTool: true              # register the reasoning_loop_log tool
+
+        # feature switches (see "Feature switches" below)
+        settingsPath: ""           # default: $DSH_HOME/dsh-reasoning-loop-guard/config.json (patch only)
+        recovery:
+          enabled: false           # append a corrective message and retry the step
+          message: ""              # empty means the built-in wording
+          maxRetries: 2            # retries per step (0–10)
+        effort:
+          enabled: false           # write reasoningEffort back, at the chosen level
+          value: low               # off | low | high | max
+        stripHistory:
+          enabled: false           # strip past turns' thinking, keep the active turn
 ```
 
 | Field | Default | Meaning |
@@ -177,8 +189,31 @@ Every field can be overridden in the profile's `cordis.patch.yml`:
 | `journalMaxBytes` | `524288` | Rotate to `<path>.1` once the journal exceeds this. |
 | `journalPreviewChars` | `120` | Characters of the offending tail stored per record. |
 | `logTool` | `true` | Register the `reasoning_loop_log` tool. |
+| `settingsPath` | `""` | Where the feature-switch config file lives; empty means the default under `$DSH_HOME`. |
+| `recovery.enabled` | `false` | After a stream is aborted, append a corrective message and retry the same step. |
+| `recovery.message` | `""` | Corrective message body; empty means the built-in wording. |
+| `recovery.maxRetries` | `2` | Automatic recoveries per step (0–10). |
+| `effort.enabled` | `false` | Write the request's `reasoningEffort` back, at the chosen level. |
+| `effort.value` | `low` | Effort level: `off` / `low` / `high` / `max`. |
+| `stripHistory.enabled` | `false` | Strip past turns' thinking, keeping only the active turn. |
 
-`validateConfig()` rejects configurations that would **silently fail to work** — `kgram > window`, `minPeriod >= maxPeriod`, `periodTail < 2 * maxPeriod`, an empty `failureCode`, a non-positive `every`, and so on — with a message naming the offending field.
+`validateConfig()` rejects configurations that would **silently fail to work** — `kgram > window`, `minPeriod >= maxPeriod`, `periodTail < 2 * maxPeriod`, an empty `failureCode`, a non-positive `every`, and so on — with a message naming the offending field. The feature switches add their own checks: `settingsPath` must be a string, `recovery.maxRetries` a non-negative integer, and `effort.value` one of `off` / `low` / `high` / `max`.
+
+### Feature switches
+
+The last seven rows above (`settingsPath` plus the three switches' six fields) are also editable **in the GUI** — except `settingsPath` itself, which is set only in the patch and merely shown **read-only** in the GUI: open this plugin on the Plugins page and, below the trigger-log panel, the detail view gains four blocks — **automatic recovery** (switch + corrective message + retries per step), **lower reasoning effort** (switch + level), **strip past thinking** (switch), and a read-only **config file** path. Save and it says "Settings saved", writing to `$DSH_HOME/dsh-reasoning-loop-guard/config.json`.
+
+**All three switches default to off**, in the patch and in the GUI alike. Each changes behaviour beyond the guard itself, so the default takes the conservative side: installing the plugin gets you "detect and abort" and nothing more until you ask for it.
+
+**Saving needs no restart.** `config.json` overrides the patch **key by key**, and every read folds again, so the change takes effect on the **next request**. That is unlike a code change — code under `node_modules` does not hot-reload (see "Known limits").
+
+**The GUI can write those six keys and nothing else; detection thresholds always stay in the patch.** That keeps "which file did this fire's threshold come from?" from becoming a question you have to guess at — the `thresholds` snapshot in the journal always corresponds to the patch. Writes are atomic (temp file + rename), and the read side falls back to the baseline on a missing or malformed `config.json` and **never throws**: the worst a broken settings file can do is send the switches back to their defaults, never make the guard inactive.
+
+What each switch does, and what it costs:
+
+- **Automatic recovery** (`recovery.*`). After the guard aborts a stream, it appends a corrective message to the session and retries the same step. **Why the message has to come first**: a retry re-sends **the identical request** (`buildRequest` re-derives messages from the session log, and the aborted `assistant/attempt` does not take part), so a bare retry with no new message necessarily reproduces the same loop. The retry budget is counted **per step** (`sessionId:turn:step`) — per session would disable the arm forever after one bad turn, per attempt would make `maxRetries` meaningless. The message carries the **producer's own `source.kind`** (session format v4 rejects `kind: "plugin"`), which has the side effect that the chat UI renders it as a context note rather than a user bubble. Any internal failure in this arm falls through to `next()`, so a failure stays as terminal as it would be without the plugin.
+- **Lower reasoning effort** (`effort.*`). Writes the request's `reasoningEffort` back at the chosen level. This is the arm that addresses the **cause** — repetition is a symptom of too high an effort level, and the guard itself only mitigates the symptom — so if your provider offers a lower level, this arm is more fundamental than the guard. It has to run outside `dsh-agent`'s own `agent/request` listener (the core re-derives provider / model / `reasoningEffort` and drops whatever we set), so it registers with `{ prepend: true }` and writes back after `next()`.
+- **Strip past thinking** (`stripHistory.enabled`). The DeepSeek adapter passes historical assistant messages' `reasoning` back as wire-level `thinking` blocks, so on turn *n* the model reads its own thinking from turns 1..n-1 — including the sentence that opened the loop ("let me verify once more") — and replaying that history also inflates the prompt prefix and hurts KV-cache reuse. **The boundary is drawn at the last genuine user turn**: reasoning before it is history and is dropped, reasoning after it belongs to the active turn and is kept. Getting this wrong is not a cosmetic bug — DeepSeek rejects a thinking request whose active-turn reasoning was removed (`The reasoning_content in the thinking mode must be passed back to the API.`), and DSH delivers tool results as `user`-role messages, so the naive "last user message" boundary lands in the middle of a tool loop and strips the active turn. **Its cost should be stated plainly**: the request object handed to `llm/stream` is frozen and `next()` takes no arguments, so changing `messages` means re-entering the runtime with a new options object — and that object is not in the `AGENT_LOOP_REQUESTS` weak set, so `dsh-agent-loop`'s "request still matches what the session log derives" invariant is skipped for it. **That is precisely why it defaults to off**, and why this arm only ever removes content, never invents it.
 
 ## Fire journal, the GUI log panel, and the `reasoning_loop_log` tool
 
@@ -192,7 +227,7 @@ Two halves, both shipped in this package:
 
 | File | Role |
 | --- | --- |
-| [`lib/log-route.js`](lib/log-route.js) | Registers `GET /reasoning-loop-guard/log` on the host's `webServer`, returning `{ path, enabled, version, stats, total, matched, entries }`; supports `limit` / `rule` / `sessionId` / `since`, and `POST {"action":"clear"}` to wipe it. |
+| [`lib/log-route.js`](lib/log-route.js) | Registers `GET /reasoning-loop-guard/log` on the host's `webServer`, returning `{ path, enabled, version, settings, stats, total, matched, entries }`; supports `limit` / `rule` / `sessionId` / `since`, and `POST` accepts two explicit mutations only — `{"action":"clear"}` and `{"action":"set","patch":{…}}` (both destructive, and deliberately **not** reachable by a link or a prefetch). |
 | [`lib/client.js`](lib/client.js) | A hand-written lazy-CJS bundle (**no build step**) that registers the `plugins.bundle.config` slot keyed by package name and renders the card. At runtime it `require`s exactly two platform seed words: `react` and `@deepseek-ai/dsh-client-ui-primitives`. |
 
 **The route carries its own same-origin fence.** The host's `webServer` provides no authentication, so the plugin writes one: a non-loopback `Host`, `Sec-Fetch-Site: cross-site`, or an `Origin` that does not match `Host` all get `403`. Request bodies are capped at 16 KiB (beyond that: `413` and a dropped socket), and any method other than `GET`/`POST` gets `405`. Your browser already carries DSH's renderer access token, so the fence never gets in the way of normal use — but another program that happens to reach the port is kept out.
@@ -247,12 +282,15 @@ So "has this been firing, and on which model?" is one tool call away, rather tha
 npm test
 ```
 
-Five suites, all of which must pass:
+Eight suites, all of which must pass:
 
 | Suite | What it covers |
 | --- | --- |
 | [`test/test-guard.mjs`](test/test-guard.mjs) | Detector calibration across six chunk sizes, separation margins, `guardStream` protocol conformance (exactly one terminating `finish`, early stop, aborted-signal handling, healthy streams untouched), message rendering. |
 | [`test/test-journal.mjs`](test/test-journal.mjs) | `$DSH_HOME` resolution, preview clipping, record shape, parse tolerance, filtering, `stats` aggregation, rotation, and the guarantee that journal failures never throw. |
+| [`test/test-settings.mjs`](test/test-settings.mjs) | The feature switches' two load-bearing properties: a save is visible to the **next** `get()` (every read folds again), and a malformed file behaves like a fresh install rather than a crash. |
+| [`test/test-recovery.mjs`](test/test-recovery.mjs) | The recovery arm's contract is all about **when** it acts: it stands aside when disabled, honours only the guard's own failures, must append a well-formed message before returning `{kind:"retry"}`, must exhaust its per-step budget, and must fall through to `next()` on any internal fault. |
+| [`test/test-strip.mjs`](test/test-strip.mjs) | The strip arm's boundary decisions — every check in it exists because removing the active turn's reasoning gets the request rejected by DeepSeek. |
 | [`test/test-card.mjs`](test/test-card.mjs) | The log route's same-origin fence decisions, method and query handling, limits and the disabled state, registration through the service, plus the client bundle's protocol shape (actually imported under a `window.__ModuleLoader__` facade) and the card's pure functions. |
 | [`test/smoke/smoke.mjs`](test/smoke/smoke.mjs) | The real `apply()` driven through a stub host: config validation, exactly one `llm/stream` listener registered globally, tool registration, and the tool's behaviour end to end. |
 | [`test/smoke/real-protocol.mjs`](test/smoke/real-protocol.mjs) | The real `@deepseek-ai/dsh-llm` invariant gate, asserting the guard's output is a *legal* stream. |
@@ -275,7 +313,7 @@ Two arms, eleven assertions:
 
 That is: the guard **really did cut the upstream generator short** (it did not merely report an error after the stream finished), and with the guard off the identical stream completed untouched — ruling out a broken test rig.
 
-> The end-to-end harness is development scaffolding and is not part of the published package. The four suites above are the ones that ship.
+> The end-to-end harness is development scaffolding and is not part of the published package. The eight suites above are the ones that ship.
 
 ## Fixtures
 
@@ -289,7 +327,8 @@ The generator is seeded and deterministic, so regenerating reproduces byte-ident
 - **Where it first fires** depends on feeding granularity: as early as ~3000 characters, as late as ~56000. All eleven recorded failures would have been caught within 10,000 characters.
 - **The original calibration was 177 samples from a single session — and it has a known blind spot.** All of them are prose and none of them is the "reasoning while writing code" shape, so the `0/166` measured there **cannot** be extrapolated. The `line-repeat` / `block-repeat` thresholds were later recalibrated on 2,799 real streams (see "Why `line-repeat` needs two conditions"). If false positives still appear in practice, raise `lineShare` (the proportion floor) or `minUnits` / `kgramThreshold` first; if they come from decoration (say your model draws very wide diagrams), raise `fillerRun`.
 - **A stream emitting only decoration is caught by the last-resort rule, and its bar is tunable.** See "Decoration is not a loop" above: the default 400 already sits above the widest legitimate formatting measured (151), but raise it if your scenario draws wider.
-- The plugin only mitigates the symptom. If your provider offers a lower reasoning effort, that addresses the cause and can be used alongside this guard.
+- **The guard itself only mitigates the symptom.** If your provider offers a lower reasoning effort, that addresses the cause — either turn on the **lower reasoning effort** switch above (see "Feature switches") or lower it directly in your DSH configuration.
+- **All three feature switches default to off, and each one's cost is spelled out in its own section.** `stripHistory` in particular makes `dsh-agent-loop`'s "request still matches what the session log derives" invariant be skipped (see "Feature switches"), and `recovery` appends a message to the session. Those are the reasons for the default, not details to skim past.
 
 ## License
 
