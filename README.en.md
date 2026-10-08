@@ -100,14 +100,32 @@ Across six feeding granularities (chunk = 1 / 8 / 40 / 200 / 1000 / 4000) the fi
 
 ## Installation
 
-This package is not published to npm yet — install it from GitHub:
+This package is not published to npm yet — install it from GitHub. DSH isolates profiles: **the desktop build uses `desktop`, the web build uses `web`**, and a plugin only runs in the profile it was installed into. The two commands differ by one name.
+
+### Desktop (`desktop`)
 
 ```powershell
-# from your DSH profile directory (e.g. ~/.dsh/profiles/desktop)
-npm install github:himi-li/dsh-reasoning-loop-guard
+# run this from DSH Desktop's bundled command runtime (the standalone npm dsh CLI rejects --profile desktop)
+# launch Desktop once to initialize its profile, fully quit the app, then run
+dsh plugin --profile desktop add github:himi-li/dsh-reasoning-loop-guard
 ```
 
-Then register the bundle in the profile's `package.json`:
+The bundled runtime refuses an uninitialized Desktop profile and will not create an ordinary CLI profile in its place — hence the required "launch once, then fully quit". Reopen Desktop after installing.
+
+### Web (`web`)
+
+```powershell
+# any dsh CLI works; the web profile is created and initialized from the shipped template on first use
+dsh plugin --profile web add github:himi-li/dsh-reasoning-loop-guard
+```
+
+**For the web build, change `desktop` in the command to `web`.** The general form is `dsh plugin --profile <name> add <package>`: `web`, `headless`, `sdk`, `sdk-minimal` and `acp` are initialized from the shipped template on first use, while only `desktop` needs the "launch once, then fully quit" step. The same package can be installed into several profiles independently.
+
+The command records the package in the profile's `dependencies` and automatically appends any package that declares `dsh.bundle` to `dsh.profile.bundles` — both places are written for you, so there is no need to edit `package.json` by hand.
+
+**This package needs no `allowBuilds` approval.** Plugins installed from git usually run a `prepare` build script, which pnpm ≥10 refuses by default until you add `allowBuilds` to the profile's `pnpm-workspace.yaml` and retry. This package ships prebuilt plain JavaScript (`lib/` is committed) and declares no `prepare` script, so the first `add` succeeds as-is. Uninstall with `dsh plugin --profile <name> remove dsh-reasoning-loop-guard`.
+
+If you would rather not use `dsh plugin`, write both places in the profile's `package.json` yourself:
 
 ```json
 {
@@ -124,7 +142,7 @@ Then register the bundle in the profile's `package.json`:
 
 **Both `dependencies` and `bundles` matter.** DSH's Plugins page only lists packages present in the profile's `dependencies` (that is how "installed" is decided), while `bundles` decides whether it is loaded at all. Registering only in `bundles` still runs the guard, but no card appears on the Plugins page.
 
-There are two ways to mount it. The `dependencies` line above (plus `pnpm install`) is one; you can also mount it directly in the profile's `cordis.patch.yml` (which is what this package ships):
+When editing by hand there are two ways to mount it: the `dependencies` line above (plus `pnpm install`), or mounting it directly in the profile's `cordis.patch.yml` (which is what this package ships):
 
 ```yaml
 - insert:

@@ -100,14 +100,32 @@ DSH 随后走它既有的 provider 错误路径处理：本步以一个可见错
 
 ## 安装
 
-本包尚未发布到 npm，从 GitHub 源码安装：
+本包尚未发布到 npm，从 GitHub 源码安装。DSH 按 profile 隔离：**桌面版用 `desktop`，网页版用 `web`**，装进哪个 profile 就只在那个形态下生效。两个形态的命令只差一个名字。
+
+### 桌面版（desktop）
 
 ```powershell
-# 在你的 DSH profile 目录下执行（例如 ~/.dsh/profiles/desktop）
-npm install github:himi-li/dsh-reasoning-loop-guard
+# 用 DSH Desktop 内置的命令运行时执行（独立安装的 npm 版 dsh CLI 会拒绝 --profile desktop）
+# 先启动一次 Desktop 初始化它的 profile，再完全退出应用，然后执行
+dsh plugin --profile desktop add github:himi-li/dsh-reasoning-loop-guard
 ```
 
-然后在 profile 的 `package.json` 里注册 bundle：
+内置命令运行时拒绝未初始化的 Desktop profile，也不会替它创建普通 CLI profile——所以「先启动一次、再完全退出」是必需的。装完重新打开 Desktop 生效。
+
+### 网页版（web）
+
+```powershell
+# 任意 dsh CLI 均可；web profile 不存在时会从随附模板自动创建并初始化
+dsh plugin --profile web add github:himi-li/dsh-reasoning-loop-guard
+```
+
+**网页版就是把命令里的 `desktop` 换成 `web`。** 通用格式是 `dsh plugin --profile <name> add <包名>`：`web`、`headless`、`sdk`、`sdk-minimal`、`acp` 首次使用时会从随附模板自动初始化，只有 `desktop` 需要「先启动一次、再完全退出」。同一个包可以分别装进多个 profile，互不影响。
+
+这条命令把包装进 profile 的 `dependencies`，并自动把声明了 `dsh.bundle` 的包追加进 `dsh.profile.bundles`——两处都会写，不需要手改 `package.json`。
+
+**本包不需要 `allowBuilds` 授权。** 从 git 安装的插件通常要跑 `prepare` 构建脚本，而 pnpm ≥10 默认拒绝，用户得先往 profile 的 `pnpm-workspace.yaml` 里写 `allowBuilds` 再重试。本包直接分发构建好的纯 JavaScript（`lib/` 已入库），没有 `prepare` 脚本，所以首次 `add` 即可装成。卸载用 `dsh plugin --profile <name> remove dsh-reasoning-loop-guard`。
+
+不想用 `dsh plugin` 的话，也可以在 profile 的 `package.json` 里自己写这两处：
 
 ```json
 {
@@ -124,7 +142,7 @@ npm install github:himi-li/dsh-reasoning-loop-guard
 
 **`dependencies` 和 `bundles` 两处都要写。** DSH 的插件页只列出存在于 profile `dependencies` 里的包（这是「已安装」的判据），而 `bundles` 决定它是否被装载。只写 `bundles` 也能跑，但卡片不会出现在插件页上。
 
-装载方式有两种。用上面那行 `dependencies`（配合 `pnpm install`）即可；也可以直接在 profile 的 `cordis.patch.yml` 里挂载（本包自带的 `cordis.patch.yml` 就是这一份）：
+手写时装载方式有两种：用上面那行 `dependencies`（配合 `pnpm install`）；或者直接在 profile 的 `cordis.patch.yml` 里挂载（本包自带的 `cordis.patch.yml` 就是这一份）：
 
 ```yaml
 - insert:

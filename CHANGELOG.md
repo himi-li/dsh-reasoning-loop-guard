@@ -3,6 +3,12 @@
 All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Documentation
+
+- **安装说明改为区分桌面版与网页版，并改用标准的 `dsh plugin --profile <name> add <包名>` 命令。** 原文只给了一句「在 profile 目录下执行 `npm install github:…`」，既没有说明 DSH 的 profile 隔离，也没有区分两种运行形态。现在 README 两版各给出两个小节：桌面版（`desktop`）与网页版（`web`），命令只差一个名字。桌面版额外写明两个前提——必须用 DSH Desktop 内置的命令运行时（独立安装的 npm 版 `dsh` CLI 会拒绝 `--profile desktop`），且要先启动一次 Desktop 初始化它的 profile、完全退出应用后再执行（内置运行时拒绝未初始化的 Desktop profile，也不会替它创建普通 CLI profile）；`web` 等 profile 则会从随附模板自动初始化。同时补充：这条命令会把包写进 profile 的 `dependencies`，并自动把声明了 `dsh.bundle` 的包追加进 `dsh.profile.bundles`，无需手改 `package.json`；**本包不需要 `allowBuilds` 授权**（从 git 安装的插件通常要跑 `prepare`，pnpm ≥10 默认拒绝，而本包直接分发构建好的纯 JavaScript、`lib/` 已入库、没有 `prepare` 脚本），并给出对应的卸载命令。手写安装与 `cordis.patch.yml` 挂载两节保留，只把引言改成与 `dsh plugin` 并列的「不想用命令时」的说法。
+
 ## [0.2.2] - 2026-10-08
 
 ### Fixed
