@@ -3,7 +3,12 @@
 All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.2.1] - 2026-10-08
+
+### Added
+
+- **检测核心现在有了 GUI 开关** (`enabled`，默认开)。0.2.0 的功能开关面板能管三条可选臂，却管不到最要紧的那一个：检测本身。`enabled` 是 `EDITABLE_KEYS` 里唯一默认值为 `true` 的键，也是唯一与 patch 同名却不冲突的键——patch 层的 `enabled: false` 仍表示「整插件不注册任何钩子」（只读一次），而设置文件里的 `enabled` 由流监听器**逐请求**读取，所以关掉它**下一次请求就生效**。关掉之后守卫不再观察任何流，三条可选臂也随之失效（它们只可能响应守卫自己抛出的失败）。判定写成「**显式 `false` 才算关**」：缺键表示「按出厂设置」，也就是开着——这样旧的 `config.json` 和既有的测试桩都不会被误读成关闭。
+- **日志列表新增整体折叠**（工具栏「收起列表 / 展开列表」）。此前的「全部展开 / 全部收起」只批量控制**每条记录详情**的开合，100 条行头始终铺在页面上；新按钮把整个列表连同行头一起收起，只留下工具栏与统计。两级折叠各管一层，互不覆盖。
 
 ### Fixed
 
@@ -13,6 +18,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 - **`REASONING_LOOP` → `REASONING_LOOP_GUARD` 是行为可见的改动，升级前请留意。** 若你在别处按失败码做了匹配（告警规则、日志过滤、别的插件），需要跟着改。`failureCode` 仍可在 patch 里覆盖；`lib/guard.js` 导出的 `FAILURE_CODE` 是唯一权威默认值，`lib/index.js` 与 `lib/recovery.js` 都从它取值，不再各写一份字面量。
 - **这类串扰无法从原理上根除。** 命名空间只挡住了**精确匹配**通用码的第三方恢复逻辑。若某个插件改成前缀匹配、或也去认 `REASONING_LOOP_GUARD`，冲突会回来——那时只能把 `failureCode` 改到一个双方都不认的值。反向也要注意：**别的插件自己检测到的循环仍会走它自己的恢复路径**，本插件的开关管不到它。
+- **环境变量是可用的紧急止血阀。** 若串扰再次发生，可以在**系统环境变量**里设 `DSH_REASONING_LOOP_GUARD=0`（关掉第三方自带的循环检测）与 `DSH_REASONING_LOOP_AUTO_RESUME=0`（关掉它的自动续跑），两者都在第三方插件里以「未设即开」的方式读取。注意环境变量必须**注销重登或重启系统**才会广播到已有进程；只重启 DSH 不够。详见 README「关键设计决策」。
 
 ## [0.2.0] - 2026-10-07
 

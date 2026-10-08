@@ -18,6 +18,21 @@ Detects and aborts **repeating reasoning** in [DSH](https://github.com/deepseek-
 
 It turns a multi-minute silent hang into an immediate, visible error.
 
+## Why you need it
+
+**The problem.** The model has already finished the real engineering work — reading screenshots, computing coordinates, deciding which script to patch — and then stalls on "preparing to output", urging itself on without ever writing: `Let me write. Go. OK. Emit. Now.` A single step emits **240,000–280,000 characters** over **200+ seconds**, ending only when the user presses Stop. Those turns end with an **empty `stopReason`** and **a single `reasoning` block** — no `text`, no `tool-call`: no executable action was ever produced, the model was idling inside its own thinking. DSH had no guard that could notice and stop early.
+
+**The approach.** The plugin mounts on the `llm/stream` waterfall (the same extension point DSH's own `llm-invariant` gate uses), **measures only the streaming reasoning text**, and every 200 characters evaluates five criteria over a rolling buffer. The moment one fires it **stops pulling from upstream** and emits a terminating chunk carrying `code: "REASONING_LOOP_GUARD"`, which DSH then handles through its existing provider-error path.
+
+**The result.** All 11 recorded real failures were **caught within 10,000 characters**; across 2,799 real reasoning streams from this machine (19.2 M characters) it fires 7 times, and **every one is a real loop**. For how the thresholds were derived, see [The problem it solves](#the-problem-it-solves) and [Why `line-repeat` needs two conditions](#why-line-repeat-needs-two-conditions).
+
+## Contents
+
+- [Why you need it](#why-you-need-it) · [The problem it solves](#the-problem-it-solves) · [How it works](#how-it-works)
+- [Install](#install) · [Configuration](#configuration) · [Feature switches](#feature-switches)
+- [The fire journal and GUI panel](#the-fire-journal-gui-panel-and-the-reasoning_loop_log-tool)
+- [Key design decisions](#key-design-decisions) · [Testing](#testing) · [Known limits](#known-limits)
+
 ## The problem it solves
 
 In one recorded session (12 turns, 324 steps), **11 of the 12 turns** ended the same way:
@@ -171,7 +186,7 @@ Every field can be overridden in the profile's `cordis.patch.yml`:
 
 | Field | Default | Meaning |
 | --- | --- | --- |
-| `enabled` | `true` | Master switch. When false the plugin registers no stream hook at all. |
+| `enabled` | `true` | Master switch. With `false` in the patch the plugin registers no stream hook at all (read once, so changing it needs a restart); the same-named key in the settings file is read per request by the stream listener, so **turning it off takes effect on the next request** (see "Feature switches"). |
 | `minChars` | `800` | Reasoning shorter than this is never judged. |
 | `every` | `200` | Evaluation cadence, in characters. |
 | `window` | `4096` | Rolling window for the k-gram rule. |
@@ -190,6 +205,7 @@ Every field can be overridden in the profile's `cordis.patch.yml`:
 | `journalPreviewChars` | `120` | Characters of the offending tail stored per record. |
 | `logTool` | `true` | Register the `reasoning_loop_log` tool. |
 | `settingsPath` | `""` | Where the feature-switch config file lives; empty means the default under `$DSH_HOME`. |
+| `enabled` (settings file) | `true` | The GUI's core-guard switch. **Only an explicit `false` turns it off**; once off the plugin watches no stream at all and the three arms go inert with it. |
 | `recovery.enabled` | `false` | After a stream is aborted, append a corrective message and retry the same step. |
 | `recovery.message` | `""` | Corrective message body; empty means the built-in wording. |
 | `recovery.maxRetries` | `2` | Automatic recoveries per step (0–10). |
@@ -201,13 +217,17 @@ Every field can be overridden in the profile's `cordis.patch.yml`:
 
 ### Feature switches
 
-The last seven rows above (`settingsPath` plus the three switches' six fields) are also editable **in the GUI** — except `settingsPath` itself, which is set only in the patch and merely shown **read-only** in the GUI: open this plugin on the Plugins page and, below the trigger-log panel, the detail view gains four blocks — **automatic recovery** (switch + corrective message + retries per step), **lower reasoning effort** (switch + level), **strip past thinking** (switch), and a read-only **config file** path. Save and it says "Settings saved", writing to `$DSH_HOME/dsh-reasoning-loop-guard/config.json`.
+The last seven rows above (`settingsPath` plus the three switches' six fields) **plus `enabled`** are also editable **in the GUI** — except `settingsPath` itself, which is set only in the patch and merely shown **read-only** in the GUI: open this plugin on the Plugins page and, below the trigger-log panel, the detail view gains five blocks — **loop guard** (the core switch), **automatic recovery** (switch + corrective message + retries per step), **lower reasoning effort** (switch + level), **strip past thinking** (switch), and a read-only **config file** path. Save and it says "Settings saved", writing to `$DSH_HOME/dsh-reasoning-loop-guard/config.json`.
 
-**All three switches default to off**, in the patch and in the GUI alike. Each changes behaviour beyond the guard itself, so the default takes the conservative side: installing the plugin gets you "detect and abort" and nothing more until you ask for it.
+**The core guard defaults to on; all three arms default to off**, in the patch and in the GUI alike. The core switch is the only key whose default is `true` — it *is* the plugin; the three arms each change behaviour beyond the guard itself, so the default takes the conservative side: installing the plugin gets you "detect and abort" and nothing more until you ask for it.
+
+**Turn the core guard off and the three arms go inert with it.** They can only ever react to a failure the guard itself raised, and once the guard watches no stream it raises none — so `recovery` / `effort` do nothing even when they are still on.
+
+**The core switch is not the same thing as the patch key of the same name, but the two never fight.** `enabled: false` in the patch means "register no hooks at all"; it is read once at load, so changing it needs a restart. The `enabled` in the settings file is read **per request** by the stream listener, so **turning it off takes effect on the next request**. The test is "**only an explicit `false` turns it off**": a missing key means "as shipped", i.e. on — so an older `config.json`, or any file that writes only some of the keys, can never be misread as a shutdown.
 
 **Saving needs no restart.** `config.json` overrides the patch **key by key**, and every read folds again, so the change takes effect on the **next request**. That is unlike a code change — code under `node_modules` does not hot-reload (see "Known limits").
 
-**The GUI can write those six keys and nothing else; detection thresholds always stay in the patch.** That keeps "which file did this fire's threshold come from?" from becoming a question you have to guess at — the `thresholds` snapshot in the journal always corresponds to the patch. Writes are atomic (temp file + rename), and the read side falls back to the baseline on a missing or malformed `config.json` and **never throws**: the worst a broken settings file can do is send the switches back to their defaults, never make the guard inactive.
+**The GUI can write those seven keys and nothing else; detection thresholds always stay in the patch.** That keeps "which file did this fire's threshold come from?" from becoming a question you have to guess at — the `thresholds` snapshot in the journal always corresponds to the patch. Writes are atomic (temp file + rename), and the read side falls back to the baseline on a missing or malformed `config.json` and **never throws**: the worst a broken settings file can do is send the switches back to their defaults, never make the guard inactive.
 
 What each switch does, and what it costs:
 
@@ -221,7 +241,7 @@ What each switch does, and what it costs:
 
 Open this plugin on DSH's **Plugins** page and its detail view gains a trigger-log panel: recent fires (time, rule, model, characters read, a preview of the offending tail), totals by rule and by model, a one-click clear, and a copy button for the journal path. With no fires yet it says so explicitly instead of rendering a blank box.
 
-The list shows one page of at most **100** records, newest first. Each row keeps its header line (time, rule, measure, where, model) always visible and folds the detail — the full measure, the origin (`turn` / `step` / attempt), the preview, and the thresholds in force — behind a click. The newest record starts expanded, since that is usually the one being explained, and the toolbar carries **Expand all** / **Collapse all**; a row you opened or closed yourself keeps that choice until a bulk action overrides it.
+The list shows one page of at most **100** records, newest first. Each row keeps its header line (time, rule, measure, where, model) always visible and folds the detail — the full measure, the origin (`turn` / `step` / attempt), the preview, and the thresholds in force — behind a click. The newest record starts expanded, since that is usually the one being explained, and the toolbar carries **Expand all** / **Collapse all**; a row you opened or closed yourself keeps that choice until a bulk action overrides it. The **Collapse list** / **Expand list** button at the far left of the toolbar is a coarser fold: it puts the whole list away, header lines included, leaving only the toolbar and the totals — use it when you want the stats first, or want the panel out of the way for a while. The two folds work on separate levels and never override each other.
 
 Two halves, both shipped in this package:
 
@@ -272,6 +292,27 @@ So "has this been firing, and on which model?" is one tool call away, rather tha
 
 **`failureCode` is namespaced by default so it cannot cross-talk with another plugin.** Before 0.2.0 the default was the generic `REASONING_LOOP`, and **other plugins ship their own loop detection and drive their own recovery off the failure code**. One real collision measured on this machine: `dsh-our-free-model` v2.0.0 bundles its own `loop-recovery` in `vendor/channel-pack/pack.js`, and it matches `error.code === "REASONING_LOOP"` exactly to decide whether to **auto-resume** — so this guard's aborts were captured as that plugin's own failures, and it responded by calling `agent.followup()` with a message stamped `source.kind: "user"` (indistinguishable from the user typing "continue") to queue a whole new turn. Two consequences, both hard to trace: **(1)** with all three of this plugin's switches off, it still looked like it "fired automatically", because the resume did not come from this plugin at all; **(2)** pressing the stop button did not stop it — the button only aborts the current stream, while the already-queued resume message runs anyway. With `REASONING_LOOP_GUARD` the exact match no longer hits, and this guard's failures go back to being handled purely by `dsh-llm-retry`'s set semantics. If you used this plugin before 0.2.0 and matched on `REASONING_LOOP` somewhere else, you need to follow the rename.
 
+**This cross-talk cannot be rooted out in principle.** The namespace only blocks third-party recovery that matches the generic code **exactly**. If some plugin switches to a prefix match, or also claims `REASONING_LOOP_GUARD`, the collision is back — and the only remaining move is to set `failureCode` to a value neither side claims. Note the reverse direction too: **a loop that another plugin detects on its own still takes that plugin's recovery path**, and this plugin's switches cannot reach it.
+
+**Emergency stopgap: environment variables.** The namespace fixed the **exact-match** collision, but the same class of conflict cannot be rooted out in principle (see the note above). If "every switch is off yet it resumed by itself, and Stop would not stop it" happens again, you can shut down the third party's half with environment variables instead of waiting for a new release of this plugin:
+
+| Variable | Set to | Effect |
+| --- | --- | --- |
+| `DSH_REASONING_LOOP_GUARD` | `0` | Turns off the third-party plugin's **own** loop detection (it ships its own `createReasoningLoopDetector`, the same one that drives its recovery decision). |
+| `DSH_REASONING_LOOP_AUTO_RESUME` | `0` | Turns off the third-party plugin's **automatic resume**. |
+
+Both are read by that plugin as "**on unless set**" (`resolveReasoningLoopGuardFlag()` only treats `0` / `false` / `no` / `off` as off), so you must set them to `0` explicitly. **They only affect that plugin's own behaviour, not this guard** — this plugin reads no `DSH_*` environment variable.
+
+Set them as **system/user environment variables**, not in `~/.dsh/.env`: DSH's launcher reserves the `DSH_` prefix as "settable only by the launching environment", so a value written to `.env` is rejected outright.
+
+```powershell
+# Current user, persistent
+[Environment]::SetEnvironmentVariable('DSH_REASONING_LOOP_GUARD', '0', 'User')
+[Environment]::SetEnvironmentVariable('DSH_REASONING_LOOP_AUTO_RESUME', '0', 'User')
+```
+
+**You must sign out and back in (or reboot) for these to take effect; restarting DSH alone is not enough.** Environment variables are broadcast once to process environment blocks by `explorer.exe` at sign-in; processes that already exist — the DSH desktop app and its Host child process included — never receive the later write. Right after setting them, `Get-EnvironmentVariable(...,'User')` or `reg query HKCU\Environment` already reads back `0` while the current process's `$env:` is still empty, which is expected. To verify immediately, quit DSH completely and start it from a **freshly opened** terminal.
+
 **A fresh detector per stream.** An automatic retry starts counting from zero, so a previous attempt's repetition never accumulates into the next one.
 
 **No hard dependency on the tool service.** The tool is registered through `ctx.inject(["tools"], …)` — an *optional* injection. A hard `inject` would leave the plugin inactive on any host without the tools service, disabling the guard itself for the sake of a diagnostic.
@@ -290,7 +331,7 @@ Eight suites, all of which must pass:
 | --- | --- |
 | [`test/test-guard.mjs`](test/test-guard.mjs) | Detector calibration across six chunk sizes, separation margins, `guardStream` protocol conformance (exactly one terminating `finish`, early stop, aborted-signal handling, healthy streams untouched), message rendering. |
 | [`test/test-journal.mjs`](test/test-journal.mjs) | `$DSH_HOME` resolution, preview clipping, record shape, parse tolerance, filtering, `stats` aggregation, rotation, and the guarantee that journal failures never throw. |
-| [`test/test-settings.mjs`](test/test-settings.mjs) | The feature switches' two load-bearing properties: a save is visible to the **next** `get()` (every read folds again), and a malformed file behaves like a fresh install rather than a crash. |
+| [`test/test-settings.mjs`](test/test-settings.mjs) | The feature switches' two load-bearing properties: a save is visible to the **next** `get()` (every read folds again), and a malformed file behaves like a fresh install rather than a crash; plus the core switch's default and the boundary that no threshold is writable from the GUI. |
 | [`test/test-recovery.mjs`](test/test-recovery.mjs) | The recovery arm's contract is all about **when** it acts: it stands aside when disabled, honours only the guard's own failures, must append a well-formed message before returning `{kind:"retry"}`, must exhaust its per-step budget, and must fall through to `next()` on any internal fault. |
 | [`test/test-strip.mjs`](test/test-strip.mjs) | The strip arm's boundary decisions — every check in it exists because removing the active turn's reasoning gets the request rejected by DeepSeek. |
 | [`test/test-card.mjs`](test/test-card.mjs) | The log route's same-origin fence decisions, method and query handling, limits and the disabled state, registration through the service, plus the client bundle's protocol shape (actually imported under a `window.__ModuleLoader__` facade) and the card's pure functions. |
@@ -330,8 +371,8 @@ The generator is seeded and deterministic, so regenerating reproduces byte-ident
 - **The original calibration was 177 samples from a single session — and it has a known blind spot.** All of them are prose and none of them is the "reasoning while writing code" shape, so the `0/166` measured there **cannot** be extrapolated. The `line-repeat` / `block-repeat` thresholds were later recalibrated on 2,799 real streams (see "Why `line-repeat` needs two conditions"). If false positives still appear in practice, raise `lineShare` (the proportion floor) or `minUnits` / `kgramThreshold` first; if they come from decoration (say your model draws very wide diagrams), raise `fillerRun`.
 - **A stream emitting only decoration is caught by the last-resort rule, and its bar is tunable.** See "Decoration is not a loop" above: the default 400 already sits above the widest legitimate formatting measured (151), but raise it if your scenario draws wider.
 - **The guard itself only mitigates the symptom.** If your provider offers a lower reasoning effort, that addresses the cause — either turn on the **lower reasoning effort** switch above (see "Feature switches") or lower it directly in your DSH configuration.
-- **All three feature switches default to off, and each one's cost is spelled out in its own section.** `stripHistory` in particular makes `dsh-agent-loop`'s "request still matches what the session log derives" invariant be skipped (see "Feature switches"), and `recovery` appends a message to the session. Those are the reasons for the default, not details to skim past.
-- **Cross-talk with a third-party plugin is fixed by the namespace, but this class of collision cannot be eliminated in principle.** Since 0.2.0 this plugin defaults to `REASONING_LOOP_GUARD` (see "Key design decisions"), so third-party recovery logic that exact-matches the generic `REASONING_LOOP` will no longer capture this guard's aborts. But if some plugin switches to prefix matching, or starts claiming `REASONING_LOOP_GUARD` too, the cross-talk comes back — at that point the only remedy is to set `failureCode` to a value neither side recognises. The reverse also holds: **a loop that another plugin detects on its own still goes through that plugin's recovery path**, and this plugin's switches do not reach it.
+- **The core guard and the three arms have different switch semantics — do not conflate them.** The core guard (`enabled`) defaults to **on**; it *is* the plugin. The three arms default to **off**, and each one's cost is spelled out in its own section. `stripHistory` in particular makes `dsh-agent-loop`'s "request still matches what the session log derives" invariant be skipped (see "Feature switches"), and `recovery` appends a message to the session. Those are the reasons for the default, not details to skim past.
+- **Cross-talk with a third-party plugin is fixed by the namespace, but this class of collision cannot be eliminated in principle.** Since 0.2.0 this plugin defaults to `REASONING_LOOP_GUARD` (see "Key design decisions"), so third-party recovery logic that exact-matches the generic `REASONING_LOOP` will no longer capture this guard's aborts. But if some plugin switches to prefix matching, or starts claiming `REASONING_LOOP_GUARD` too, the cross-talk comes back — at that point the only remedy is to set `failureCode` to a value neither side recognises. The reverse also holds: **a loop that another plugin detects on its own still goes through that plugin's recovery path**, and this plugin's switches do not reach it. If the cross-talk does recur, `DSH_REASONING_LOOP_GUARD=0` / `DSH_REASONING_LOOP_AUTO_RESUME=0` are an immediate stopgap (see "Key design decisions").
 
 ## License
 

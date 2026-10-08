@@ -49,7 +49,7 @@ const BASE = {
 console.log("--- 1. the editable surface ---");
 check(SETTINGS_VERSION === 1, "the on-disk version is 1");
 check(EFFORT_VALUES.join(",") === "off,low,high,max", "the four effort levels match the adapter");
-check(EDITABLE_KEY_NAMES.length === 6, `exactly six keys are writable (got ${EDITABLE_KEY_NAMES.length})`);
+check(EDITABLE_KEY_NAMES.length === 7, `exactly seven keys are writable (got ${EDITABLE_KEY_NAMES.length})`);
 for (const key of EDITABLE_KEY_NAMES) {
   const spec = EDITABLE_KEYS[key];
   check(
@@ -57,6 +57,7 @@ for (const key of EDITABLE_KEY_NAMES) {
     `${key} declares a known kind`,
   );
 }
+check(EDITABLE_KEYS["enabled"].default === true, "the core guard is armed by default");
 check(EDITABLE_KEYS["recovery.enabled"].default === false, "recovery defaults off");
 check(EDITABLE_KEYS["effort.enabled"].default === false, "effort downgrade defaults off");
 check(EDITABLE_KEYS["stripHistory.enabled"].default === false, "history strip defaults off");
@@ -161,7 +162,7 @@ console.log("\n--- 5. the store folds over the baseline ---");
 
   const described = store.describe();
   check(described.path === configPath, "describe reports the path");
-  check(described.keys.length === 6, "describe lists every editable key");
+  check(described.keys.length === 7, "describe lists every editable key");
   check(described.values["recovery.message"] === "内置文案", "describe reports the effective message");
   check(described.values["effort.value"] === "low", "describe reports the effective effort level");
 }

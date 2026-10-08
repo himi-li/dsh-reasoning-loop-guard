@@ -470,6 +470,7 @@ console.log("\n--- 13. the settings panel renders from a loaded store ---");
     settings: {
       path: "C:\\state\\config.json",
       values: {
+        enabled: true,
         "recovery.enabled": false,
         "recovery.message": "",
         "recovery.maxRetries": 2,
@@ -478,7 +479,7 @@ console.log("\n--- 13. the settings panel renders from a loaded store ---");
         "stripHistory.enabled": false,
       },
       stored: {},
-      keys: ["recovery.enabled"],
+      keys: ["enabled", "recovery.enabled"],
     },
   };
 
@@ -584,12 +585,22 @@ console.log("\n--- 13. the settings panel renders from a loaded store ---");
   const loadedTypes = types(loaded);
   check(loadedTypes.includes("Switch"), "a loaded store renders the toggles");
   const labels = propsOf(loaded, "Switch").map((entry) => entry.props.label);
+  check(labels.includes(helpers.STRINGS.en.coreLabel), "the core guard switch is offered");
   check(labels.includes(helpers.STRINGS.en.recoveryLabel), "the recovery toggle is offered");
   check(labels.includes(helpers.STRINGS.en.effortLabel), "the effort toggle is offered");
   check(labels.includes(helpers.STRINGS.en.stripLabel), "the history-strip toggle is offered");
+  const switches = propsOf(loaded, "Switch");
   check(
-    propsOf(loaded, "Switch").every((entry) => entry.props.checked === false),
-    "every switch starts off, as the defaults promise",
+    switches.some(
+      (entry) => entry.props.label === helpers.STRINGS.en.coreLabel && entry.props.checked === true,
+    ),
+    "the core guard reads back armed, as its default promises",
+  );
+  check(
+    switches
+      .filter((entry) => entry.props.label !== helpers.STRINGS.en.coreLabel)
+      .every((entry) => entry.props.checked === false),
+    "every opt-in arm starts off, as the defaults promise",
   );
   check(
     propsOf(loaded, "Input").length === 0,
@@ -931,6 +942,26 @@ console.log("\n--- 15. the record list folds, newest open ---");
   const collapsed = flatten(View({ view: "page" })).join(" | ");
   check(collapsed.includes("material-0") === false, "collapse-all closes even the newest row");
   check(collapsed.includes("material-1") === false, "collapse-all closes a row the user had opened");
+
+  // The list fold is the coarser control: it hides the rows themselves rather
+  // than their details, so even the row headers disappear.
+  cursor = 0;
+  const listView = View({ view: "page" });
+  const listText = flatten(listView).join(" | ");
+  check(listText.includes(helpers.STRINGS.en.collapseList), "the toolbar offers the list fold");
+  buttons.length = 0;
+  cursor = 0;
+  collectButtons(View({ view: "page" }));
+  const listFold = buttons.find((node) => flatten(node).includes(helpers.STRINGS.en.collapseList));
+  check(listFold !== undefined, "the list fold is reachable");
+  listFold.props.onClick();
+  cursor = 0;
+  const foldedList = flatten(View({ view: "page" })).join(" | ");
+  check(foldedList.includes("periodic-run") === false, "the list fold hides every row header");
+  check(
+    foldedList.includes(helpers.STRINGS.en.expandList),
+    "the list fold turns into its expand counterpart",
+  );
 
   globalThis.fetch = originalFetch;
 }
