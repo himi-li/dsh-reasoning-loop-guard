@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { validateConfig, Config, apply, name } from "../../lib/index.js";
+import { FAILURE_CODE } from "../../lib/guard.js";
 
 let failures = 0;
 const check = (ok, label) => {
@@ -45,6 +46,14 @@ rejects({ periodTail: 10 }, "periodTail < 2*maxPeriod is rejected");
 rejects({ failureCode: "" }, "empty failureCode is rejected");
 rejects({ every: 0 }, "every below its floor is rejected");
 rejects({ journalMaxBytes: 10 }, "journalMaxBytes below its floor is rejected");
+
+// The default failure code is namespaced, not the generic `REASONING_LOOP`:
+// third-party plugins ship their own loop detection and key their recovery off
+// that exact code, so a generic default let them capture this guard's aborts and
+// re-prompt on its behalf. Pin the value so the collision cannot come back.
+check(base.failureCode === FAILURE_CODE, `default failure code is the namespaced ${FAILURE_CODE} (got ${String(base.failureCode)})`);
+check(base.failureCode !== "REASONING_LOOP", "the generic REASONING_LOOP is not the default (third-party collision)");
+
 let okConfig = true;
 try {
   validateConfig(base);
@@ -122,7 +131,7 @@ const guarded = await collect(handler({ sessionId: "smoke" }, () => fromText(deg
 const finish = guarded.at(-1);
 check(finish?.type === "finish", "degenerate stream ends with a finish chunk");
 check(finish?.reason?.kind === "error", "degenerate stream reports an error finish");
-check(finish?.reason?.failure?.code === "REASONING_LOOP", "failure code is REASONING_LOOP");
+check(finish?.reason?.failure?.code === FAILURE_CODE, `failure code is ${FAILURE_CODE}`);
 check(warned.length === 1, `the firing was logged once (got ${warned.length})`);
 console.log(`      log: ${warned[0]}`);
 
@@ -134,7 +143,7 @@ console.log("\n--- every fixture through the real middleware ---");
 let hit = 0;
 for (const item of positives) {
   const chunks = await collect(handler({ sessionId: "smoke" }, () => fromText(item.text, 200)));
-  if (chunks.at(-1)?.reason?.failure?.code === "REASONING_LOOP") hit += 1;
+  if (chunks.at(-1)?.reason?.failure?.code === FAILURE_CODE) hit += 1;
 }
 let falsePositives = 0;
 for (const item of negatives) {

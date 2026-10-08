@@ -3,6 +3,17 @@
 All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **默认失败码从通用的 `REASONING_LOOP` 改为带命名空间的 `REASONING_LOOP_GUARD`，修掉与第三方插件的串扰。** 起因是一次真实故障：本插件的三个功能开关**全部关闭**，用户却看到推理被中断后**自动续跑**，而且**点停止按钮也停不下来**。取证结论是失败码撞车——`dsh-our-free-model` v2.0.0 在 `vendor/channel-pack/pack.js` 里编进了它自己的 `loop-recovery`，用 `error.code === "REASONING_LOOP"` 精确匹配判断「这是不是我自己的循环失败」，于是**本守卫的中断被它捕获**，它随即调 `agent.followup()` 注入一条 `source.kind: "user"` 的消息（与用户手打「继续」同形）重排了一整轮。这解释了全部症状：续跑不来自本插件（所以开关全关也照跑），而停止按钮只中止当前流（所以已经排队的续跑消息照样执行）。证据链完整：宿主日志三行相邻记录——`[reasoning-loop-guard] … aborting stream`、`[dsh-agent-error] … [REASONING_LOOP]`、`[our-free-model] [codearts-auth] … 思考陷入重复被中止，已自动续跑（第 1/2 次）`；会话原始日志（多帧 zstd，488 帧 / 887 条记录）里那条注入消息的 `source` 只有 `{"kind":"user"}` 而无 `rpcId`，与真实用户消息的形态不同。`test/smoke/smoke.mjs` 新增两条断言把默认值钉住（等于 `FAILURE_CODE`、且**不等于**通用 `REASONING_LOOP`），防止这个撞车再回来。
+
+### Notes
+
+- **`REASONING_LOOP` → `REASONING_LOOP_GUARD` 是行为可见的改动，升级前请留意。** 若你在别处按失败码做了匹配（告警规则、日志过滤、别的插件），需要跟着改。`failureCode` 仍可在 patch 里覆盖；`lib/guard.js` 导出的 `FAILURE_CODE` 是唯一权威默认值，`lib/index.js` 与 `lib/recovery.js` 都从它取值，不再各写一份字面量。
+- **这类串扰无法从原理上根除。** 命名空间只挡住了**精确匹配**通用码的第三方恢复逻辑。若某个插件改成前缀匹配、或也去认 `REASONING_LOOP_GUARD`，冲突会回来——那时只能把 `failureCode` 改到一个双方都不认的值。反向也要注意：**别的插件自己检测到的循环仍会走它自己的恢复路径**，本插件的开关管不到它。
+
 ## [0.2.0] - 2026-10-07
 
 ### Added

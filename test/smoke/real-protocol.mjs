@@ -16,6 +16,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { AssistantStreamAccumulator, assembleAssistantStream, isAgentLoopRequest, markAgentLoopRequest } from "@deepseek-ai/dsh-llm";
 import { apply, Config } from "../../lib/index.js";
+import { FAILURE_CODE } from "../../lib/guard.js";
 
 // `validateStream` is module-private; re-create the install hook it uses.
 // We import the module and reach the validator through the exported `apply`
@@ -86,7 +87,7 @@ for await (const chunk of validateHook({ sessionId: "s-real" }, () => guarded)) 
 check(failMessages.length === 0, `llm-invariant reported no violation (got ${failMessages.length}: ${failMessages.join(" | ")})`);
 check(validated.at(-1)?.type === "finish", "guarded stream reaches a terminal finish through the validator");
 check(validated.at(-1)?.reason?.kind === "error", "terminal finish is an error finish");
-check(validated.at(-1)?.reason?.failure?.code === "REASONING_LOOP", "failure code survives validation");
+check(validated.at(-1)?.reason?.failure?.code === FAILURE_CODE, `failure code survives validation (${FAILURE_CODE})`);
 
 console.log("\n--- real llm-invariant accepts healthy streams untouched ---");
 let healthyFailures = 0;

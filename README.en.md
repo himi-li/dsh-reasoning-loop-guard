@@ -7,7 +7,7 @@
   </picture>
 </p>
 
-[![tests](https://img.shields.io/badge/tests-5%20suites%20passing-brightgreen)](#testing)
+[![tests](https://img.shields.io/badge/tests-8%20suites%20passing-brightgreen)](#testing)
 [![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
 [简体中文](README.md) | **English**
@@ -36,7 +36,7 @@ DSH had no guard that could notice this and stop early.
 The plugin mounts on the `llm/stream` waterfall — the same extension point DSH's own `llm-invariant` gate uses — measures only the streaming reasoning text, and **stops pulling from upstream the moment a verdict fires**, then emits a terminating chunk:
 
 ```js
-{ type: "finish", reason: { kind: "error", failure: { message, code: "REASONING_LOOP" } } }
+{ type: "finish", reason: { kind: "error", failure: { message, code: "REASONING_LOOP_GUARD" } } }
 ```
 
 DSH then handles it through its existing provider-error path: the step ends with a visible error instead of idling silently.
@@ -147,7 +147,7 @@ Every field can be overridden in the profile's `cordis.patch.yml`:
         fillerRun: 400             # filler-run: trailing decoration characters
         minChars: 800              # do not judge below this many characters
         every: 200                 # evaluate every N characters
-        failureCode: REASONING_LOOP
+        failureCode: REASONING_LOOP_GUARD
 
         # fire journal (see below)
         journal: true
@@ -183,7 +183,7 @@ Every field can be overridden in the profile's `cordis.patch.yml`:
 | `blockMin` / `blockCount` | `100` / `4` | Block length and occurrence count for `block-repeat`. |
 | `lineMin` / `lineCount` / `lineShare` | `10` / `3` / `0.1` | Line length, occurrence count, and the minimum share of the window the repeats must occupy for `line-repeat` (see "Why `line-repeat` needs two conditions"). |
 | `fillerRun` | `400` | `filler-run`: trailing decoration characters needed to call it a stall. |
-| `failureCode` | `REASONING_LOOP` | Failure code carried by the terminating chunk. |
+| `failureCode` | `REASONING_LOOP_GUARD` | Failure code carried by the terminating chunk. **Deliberately namespaced** so a third-party plugin's loop recovery cannot cross-talk with this guard (see "Key design decisions"). |
 | `journal` | `true` | Record every fire to a JSONL journal. |
 | `journalPath` | `""` | Journal location; empty means the default under `$DSH_HOME`. |
 | `journalMaxBytes` | `524288` | Rotate to `<path>.1` once the journal exceeds this. |
@@ -240,7 +240,7 @@ Every time the guard fires it appends one JSON line to `$DSH_HOME/dsh-reasoning-
 
 ```json
 {"v":1,"at":1760000000000,"iso":"2026-10-06T15:20:00.000Z","rule":"periodic-run",
- "atChars":3120,"failureCode":"REASONING_LOOP","pluginVersion":"0.2.0",
+ "atChars":3120,"failureCode":"REASONING_LOOP_GUARD","pluginVersion":"0.2.0",
  "sessionId":"...","provider":"...","model":"...","purpose":"...",
  "reasoningEffort":"max","turn":17,"step":2,"attemptId":"...","cwd":"...",
  "units":6,"period":64,"elapsedMs":4210,"fromStartMs":18730,"ttftMs":14520,
@@ -268,7 +268,9 @@ So "has this been firing, and on which model?" is one tool call away, rather tha
 
 ## Key design decisions
 
-**`failureCode` deliberately sits outside the default retryable set.** The retryable codes are `EMPTY_RESPONSE / RATE_LIMIT / SERVER / TIMEOUT / TRANSPORT`; `REASONING_LOOP` is not among them, so `dsh-llm-retry` will not retry automatically. The reason: repetition is a property of the *request itself*, so an automatic retry re-sends the whole prompt and burns the same tokens to loop again. If you do want retries, set `failureCode: EMPTY_RESPONSE`.
+**`failureCode` deliberately sits outside the default retryable set.** The retryable codes are `EMPTY_RESPONSE / RATE_LIMIT / SERVER / TIMEOUT / TRANSPORT`; `REASONING_LOOP_GUARD` is not among them, so `dsh-llm-retry` will not retry automatically. The reason: repetition is a property of the *request itself*, so an automatic retry re-sends the whole prompt and burns the same tokens to loop again. If you do want retries, set `failureCode: EMPTY_RESPONSE`.
+
+**`failureCode` is namespaced by default so it cannot cross-talk with another plugin.** Before 0.2.0 the default was the generic `REASONING_LOOP`, and **other plugins ship their own loop detection and drive their own recovery off the failure code**. One real collision measured on this machine: `dsh-our-free-model` v2.0.0 bundles its own `loop-recovery` in `vendor/channel-pack/pack.js`, and it matches `error.code === "REASONING_LOOP"` exactly to decide whether to **auto-resume** — so this guard's aborts were captured as that plugin's own failures, and it responded by calling `agent.followup()` with a message stamped `source.kind: "user"` (indistinguishable from the user typing "continue") to queue a whole new turn. Two consequences, both hard to trace: **(1)** with all three of this plugin's switches off, it still looked like it "fired automatically", because the resume did not come from this plugin at all; **(2)** pressing the stop button did not stop it — the button only aborts the current stream, while the already-queued resume message runs anyway. With `REASONING_LOOP_GUARD` the exact match no longer hits, and this guard's failures go back to being handled purely by `dsh-llm-retry`'s set semantics. If you used this plugin before 0.2.0 and matched on `REASONING_LOOP` somewhere else, you need to follow the rename.
 
 **A fresh detector per stream.** An automatic retry starts counting from zero, so a previous attempt's repetition never accumulates into the next one.
 
@@ -308,7 +310,7 @@ Two arms, eleven assertions:
 | Exit code | **1** | **0** |
 | Upstream actually emitted | **3120 / 7659 chars** | 7659 / 7659 chars |
 | Upstream reached its finish | no | yes |
-| stderr | `REASONING_LOOP: … 周期 64 字符，重复 6 次，已读到 3120 字符` | — |
+| stderr | `REASONING_LOOP_GUARD: … 周期 64 字符，重复 6 次，已读到 3120 字符` | — |
 | stdout | empty | `TG-FAKE-OK` |
 
 That is: the guard **really did cut the upstream generator short** (it did not merely report an error after the stream finished), and with the guard off the identical stream completed untouched — ruling out a broken test rig.
@@ -329,6 +331,7 @@ The generator is seeded and deterministic, so regenerating reproduces byte-ident
 - **A stream emitting only decoration is caught by the last-resort rule, and its bar is tunable.** See "Decoration is not a loop" above: the default 400 already sits above the widest legitimate formatting measured (151), but raise it if your scenario draws wider.
 - **The guard itself only mitigates the symptom.** If your provider offers a lower reasoning effort, that addresses the cause — either turn on the **lower reasoning effort** switch above (see "Feature switches") or lower it directly in your DSH configuration.
 - **All three feature switches default to off, and each one's cost is spelled out in its own section.** `stripHistory` in particular makes `dsh-agent-loop`'s "request still matches what the session log derives" invariant be skipped (see "Feature switches"), and `recovery` appends a message to the session. Those are the reasons for the default, not details to skim past.
+- **Cross-talk with a third-party plugin is fixed by the namespace, but this class of collision cannot be eliminated in principle.** Since 0.2.0 this plugin defaults to `REASONING_LOOP_GUARD` (see "Key design decisions"), so third-party recovery logic that exact-matches the generic `REASONING_LOOP` will no longer capture this guard's aborts. But if some plugin switches to prefix matching, or starts claiming `REASONING_LOOP_GUARD` too, the cross-talk comes back — at that point the only remedy is to set `failureCode` to a value neither side recognises. The reverse also holds: **a loop that another plugin detects on its own still goes through that plugin's recovery path**, and this plugin's switches do not reach it.
 
 ## License
 

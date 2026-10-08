@@ -20,7 +20,7 @@ import {
   normalize,
   periodicRun,
 } from "../lib/detector.js";
-import { guardStream, failureMessage, thresholdSnapshot } from "../lib/guard.js";
+import { guardStream, failureMessage, thresholdSnapshot, FAILURE_CODE } from "../lib/guard.js";
 
 const DIR = fileURLToPath(new URL("./fixtures", import.meta.url));
 const positives = JSON.parse(readFileSync(`${DIR}/degenerate.json`, "utf8"));
@@ -242,7 +242,7 @@ const finishes = guarded.filter((chunk) => chunk.type === "finish");
 check(finishes.length === 1, `exactly one finish chunk (got ${finishes.length})`);
 check(guarded.at(-1).type === "finish", "finish is the last chunk");
 check(finishes[0]?.reason.kind === "error", "loop reports reason.kind === error");
-check(finishes[0]?.reason.failure.code === "REASONING_LOOP", "failure code is REASONING_LOOP");
+check(finishes[0]?.reason.failure.code === FAILURE_CODE, `failure code is ${FAILURE_CODE}`);
 check(typeof finishes[0]?.reason.failure.message === "string" && finishes[0].reason.failure.message.length > 0, "failure carries a message");
 check(guarded.length < degenerate.text.length / 40, `stopped early: ${guarded.length} chunks vs ${Math.ceil(degenerate.text.length / 40)} upstream`);
 
@@ -309,7 +309,7 @@ console.log("\n--- 3b. the firing report ---");
     }),
   );
   check(guarded.at(-1)?.type === "finish", "a throwing report hook still yields the terminal chunk");
-  check(guarded.at(-1)?.reason.failure.code === "REASONING_LOOP", "and the failure code survives it");
+  check(guarded.at(-1)?.reason.failure.code === FAILURE_CODE, "and the failure code survives it");
 }
 {
   // Without a probe the report still arrives, just with less context.
@@ -469,14 +469,14 @@ for (const verdict of [
   { rule: "line-repeat", atChars: 6400, count: 3, lineLen: 14, share: 0.117 },
   { rule: "kgram-repeat", atChars: 6400, count: 20 },
 ]) {
-  const line = failureMessage(verdict, "REASONING_LOOP");
+  const line = failureMessage(verdict);
   check(line.includes("重复") && line.includes(String(verdict.atChars)), `message renders for ${verdict.rule}`);
   console.log(line);
 }
 {
   // A verdict without a share still renders: hand-built or older verdicts must
   // not produce "占窗口 NaN%".
-  const line = failureMessage({ rule: "line-repeat", atChars: 100, count: 3, lineLen: 12 }, "REASONING_LOOP");
+  const line = failureMessage({ rule: "line-repeat", atChars: 100, count: 3, lineLen: 12 });
   check(!line.includes("NaN"), "a verdict with no share renders without NaN");
 }
 

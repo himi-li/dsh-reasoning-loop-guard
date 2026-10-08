@@ -7,7 +7,7 @@
   </picture>
 </p>
 
-[![tests](https://img.shields.io/badge/tests-5%20suites%20passing-brightgreen)](#测试)
+[![tests](https://img.shields.io/badge/tests-8%20suites%20passing-brightgreen)](#测试)
 [![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
 **简体中文** | [English](README.en.md)
@@ -36,7 +36,7 @@
 插件挂载在 `llm/stream` 瀑布钩子上——正是 DSH 自己的 `llm-invariant` 校验所用的同一个扩展点——只测量流式推理文本，并在判定成立的瞬间**停止向上游拉取**，随后发出终止块：
 
 ```js
-{ type: "finish", reason: { kind: "error", failure: { message, code: "REASONING_LOOP" } } }
+{ type: "finish", reason: { kind: "error", failure: { message, code: "REASONING_LOOP_GUARD" } } }
 ```
 
 DSH 随后走它既有的 provider 错误路径处理：本步以一个可见错误结束，而不是静默空转。
@@ -147,7 +147,7 @@ node --input-type=module -e "import { readPluginMeta } from '@deepseek-ai/dsh-ap
         fillerRun: 400             # filler-run：末尾连续装饰字符数
         minChars: 800              # 低于这么多字符不做判定
         every: 200                 # 每 N 个字符评估一次
-        failureCode: REASONING_LOOP
+        failureCode: REASONING_LOOP_GUARD
 
         # 触发日志（见下）
         journal: true
@@ -183,7 +183,7 @@ node --input-type=module -e "import { readPluginMeta } from '@deepseek-ai/dsh-ap
 | `blockMin` / `blockCount` | `100` / `4` | `block-repeat` 的块长度与出现次数。 |
 | `lineMin` / `lineCount` / `lineShare` | `10` / `3` / `0.1` | `line-repeat` 的行长度、出现次数，以及重复行至少要占窗口的比例（见上文「为什么 `line-repeat` 要两个条件」）。 |
 | `fillerRun` | `400` | `filler-run`：末尾连续装饰字符达到多少才判定为卡死。 |
-| `failureCode` | `REASONING_LOOP` | 终止块携带的失败码。 |
+| `failureCode` | `REASONING_LOOP_GUARD` | 终止块携带的失败码。**刻意带命名空间**，避免与第三方插件的循环恢复互相串扰（见下文「关键设计决策」）。 |
 | `journal` | `true` | 把每次触发记录进 JSONL 日志。 |
 | `journalPath` | `""` | 日志位置；留空表示 `$DSH_HOME` 下的默认路径。 |
 | `journalMaxBytes` | `524288` | 日志超过该字节数后轮转为 `<path>.1`。 |
@@ -240,7 +240,7 @@ node --input-type=module -e "import { readPluginMeta } from '@deepseek-ai/dsh-ap
 
 ```json
 {"v":1,"at":1760000000000,"iso":"2026-10-06T15:20:00.000Z","rule":"periodic-run",
- "atChars":3120,"failureCode":"REASONING_LOOP","pluginVersion":"0.2.0",
+ "atChars":3120,"failureCode":"REASONING_LOOP_GUARD","pluginVersion":"0.2.0",
  "sessionId":"...","provider":"...","model":"...","purpose":"...",
  "reasoningEffort":"max","turn":17,"step":2,"attemptId":"...","cwd":"...",
  "units":6,"period":64,"elapsedMs":4210,"fromStartMs":18730,"ttftMs":14520,
@@ -268,7 +268,9 @@ node --input-type=module -e "import { readPluginMeta } from '@deepseek-ai/dsh-ap
 
 ## 关键设计决策
 
-**`failureCode` 故意放在默认可重试集合之外。** 可重试的失败码是 `EMPTY_RESPONSE / RATE_LIMIT / SERVER / TIMEOUT / TRANSPORT`，`REASONING_LOOP` 不在其中，因此 `dsh-llm-retry` 不会自动重试。原因是：复读是**这次请求本身**的性质，自动重试会把整个 prompt 再发一遍，白烧同样的 token 再复读一次。如果你确实想要重试，把 `failureCode` 设为 `EMPTY_RESPONSE`。
+**`failureCode` 故意放在默认可重试集合之外。** 可重试的失败码是 `EMPTY_RESPONSE / RATE_LIMIT / SERVER / TIMEOUT / TRANSPORT`，`REASONING_LOOP_GUARD` 不在其中，因此 `dsh-llm-retry` 不会自动重试。原因是：复读是**这次请求本身**的性质，自动重试会把整个 prompt 再发一遍，白烧同样的 token 再复读一次。如果你确实想要重试，把 `failureCode` 设为 `EMPTY_RESPONSE`。
+
+**`failureCode` 默认带命名空间，是为了不和别的插件串台。** 0.2.0 之前默认值是通用的 `REASONING_LOOP`，而**其他插件也会自带循环检测，并按失败码驱动自己的恢复逻辑**。本机实测到的一个真实冲突：`dsh-our-free-model` v2.0.0 在 `vendor/channel-pack/pack.js` 里编进了自己的 `loop-recovery`，它用 `error.code === "REASONING_LOOP"` 精确匹配来决定是否**自动续跑**——于是本守卫的中断被它当成自己的失败捕获，它随即用 `agent.followup()` 注入一条 `source.kind: "user"` 的消息（与用户手打「继续」同形）重排了一整轮。后果有两个，而且都很难查：**（1）**本插件的三个功能开关全关时，看起来仍然「自动触发了」——因为续跑根本不来自本插件；**（2）**用户点停止按钮也停不下来——按钮只中止当前流，那条已经排队的续跑消息照样会跑起来。改成 `REASONING_LOOP_GUARD` 后精确匹配不再命中，本守卫的失败回到只由 `dsh-llm-retry` 的集合语义处理。如果你在 0.2.0 之前用过本插件、又在别处按 `REASONING_LOOP` 做了匹配，升级后需要跟着改。
 
 **每条流都新建一个检测器。** 自动重试会从零开始计数，上一次尝试的重复不会累积到下一次。
 
@@ -308,7 +310,7 @@ npm test
 | 退出码 | **1** | **0** |
 | 上游实际发出 | **3120 / 7659 字符** | 7659 / 7659 字符 |
 | 上游是否跑到自己的结尾 | 否 | 是 |
-| stderr | `REASONING_LOOP: … 周期 64 字符，重复 6 次，已读到 3120 字符` | — |
+| stderr | `REASONING_LOOP_GUARD: … 周期 64 字符，重复 6 次，已读到 3120 字符` | — |
 | stdout | 空 | `TG-FAKE-OK` |
 
 也就是说：护栏**确实把上游生成器截断了**（而不是等流跑完才报个错）；而关掉护栏后，同一条流完整跑完、毫发无损——这排除了「测试装置本身是坏的」这种可能。
@@ -329,6 +331,7 @@ npm test
 - **只输出装饰的流会被兜底判据拦下，阈值可调。** 见上文「装饰不是复读」：默认 400 已高于实测最宽合法排版（151），但如果你的场景里合法图形更长，把它调高即可。
 - **护栏本身只缓解症状。** 如果你的 provider 支持更低的推理档位，那才是针对病因——可以打开上面的**降低思考强度**开关（见「功能开关」），或者在你的 DSH 配置里直接调低。
 - **三个功能开关默认关闭，代价在各自小节里写明。** 尤其 `stripHistory` 会让 `dsh-agent-loop` 的「请求仍与会话日志推导一致」不变量被跳过（见「功能开关」），`recovery` 会向会话追加一条消息。这些都是默认关闭的原因，不是可以忽略的细节。
+- **失败码与第三方插件的串扰已由命名空间修掉，但同类冲突无法从原理上根除。** 0.2.0 起本插件默认用 `REASONING_LOOP_GUARD`（见「关键设计决策」），所以按通用 `REASONING_LOOP` 精确匹配的第三方恢复逻辑不会再捕获本守卫的中断。但如果某个插件改成**前缀匹配**、或干脆也去认 `REASONING_LOOP_GUARD`，串扰就会回来——那时只能改 `failureCode` 到一个双方都不认的值。反过来也要注意：**别的插件自己检测到的循环仍然会走它自己的恢复路径**，本插件的开关管不到它。
 
 ## 许可证
 
