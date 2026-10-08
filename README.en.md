@@ -273,6 +273,8 @@ Every time the guard fires it appends one JSON line to `$DSH_HOME/dsh-reasoning-
 
 Fields are omitted when they are unknown, so an older record simply carries fewer of them. The ones worth knowing: `ttftMs` separates "slow model that then started spinning" from "spinning from the first token"; `aborted` records whether the caller had already given up before the verdict landed; `thresholds` is the exact configuration that produced the verdict, which is what you need to reason about a false positive months later; `previewRaw` is the untruncated tail whenever `preview` clipped it; a `line-repeat` record also carries `share`, without which a modest `count` looks unjustified.
 
+**`iso` is stored in UTC; every surface shows local time.** The persisted `iso` is the canonical UTC form (`…Z`), because it has to be unambiguous. What you *read*, though, is always local wall-clock time — the panel's row stamps and its time-span stat, and the `list` rows and `stats` `span:` line of `reasoning_loop_log`, all go through the same `localStamp()`. That is what keeps a fire at 16:25 from looking like one at 08:25. The `stats` "by day" table buckets by **local** day for the same reason, so it can never disagree with the rows above it.
+
 The journal is bounded (`journalMaxBytes`, default 512 KiB → rotates to `fires.jsonl.1`), every write is wrapped in try/catch, and a journal failure **only warns — it never disturbs the stream**. Set `journal: false` to disable it entirely.
 
 The plugin also registers a read-only maintenance tool, `reasoning_loop_log`:

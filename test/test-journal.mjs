@@ -15,6 +15,7 @@ import {
   clipPreview,
   createJournal,
   defaultJournalPath,
+  localStamp,
   parseJournal,
   resolveDshHome,
 } from "../lib/journal.js";
@@ -52,7 +53,21 @@ check(clipPreview("abc", 3) === "abc", "short preview is untouched");
 check(clipPreview(undefined, 3) === "", "non-string preview becomes empty");
 check(clipPreview("abcdef", 0) === "", "non-positive bound becomes empty");
 
-console.log("\n--- 3. record shape ---");
+console.log("\n--- 3. human-readable stamps are local ---");
+{
+  // The regression this pins: the panel printed the stored UTC string, so a
+  // fire at 16:25 local (08:25Z) looked like a fire that never happened.
+  const at = 1791447902507;
+  const local = new Date(at);
+  const expected = `${local.getFullYear()}-${String(local.getMonth() + 1).padStart(2, "0")}-${String(local.getDate()).padStart(2, "0")} `
+    + `${String(local.getHours()).padStart(2, "0")}:${String(local.getMinutes()).padStart(2, "0")}:${String(local.getSeconds()).padStart(2, "0")}`;
+  check(localStamp(at) === expected, `localStamp renders the reader's clock (${localStamp(at)})`);
+  check(localStamp(at) !== new Date(at).toISOString().replace("T", " ").slice(0, 19), "localStamp is not the raw UTC string");
+  check(localStamp(undefined) === "?" && localStamp(Number.NaN) === "?" && localStamp("x") === "?", "localStamp survives a missing or unusable instant");
+  check(localStamp(1767225600000).length === 19, "localStamp emits a fixed-width YYYY-MM-DD HH:MM:SS stamp");
+}
+
+console.log("\n--- 4. record shape ---");
 const verdict = { rule: "periodic-run", atChars: 2120, units: 5, period: 104, preview: "Let me write. Go. Emit. OK. Now." };
 const options = { sessionId: "sess-1", provider: "deepseek", model: "deepseek-v4.1" };
 const config = { failureCode: "REASONING_LOOP", journalPreviewChars: 20 };
@@ -116,13 +131,13 @@ check(noPreview.preview === undefined, "an empty preview is omitted");
   );
 }
 
-console.log("\n--- 4. parsing tolerates damage ---");
+console.log("\n--- 5. parsing tolerates damage ---");
 const damaged = `{"v":1,"at":1}\n\n  \nnot json\n[1,2,3]\n{"v":1,"at":2}\n{"v":1,"at":3`;
 const parsed = parseJournal(damaged);
 check(parsed.length === 2, `only well-formed object lines survive (got ${parsed.length})`);
 check(parsed[0].at === 1 && parsed[1].at === 2, "records keep file order");
 
-console.log("\n--- 5. journal writes, reads and filters ---");
+console.log("\n--- 6. journal writes, reads and filters ---");
 check(journal.enabled === true, "journal is enabled by default");
 check(journal.record(record) === true, "a record is written");
 check(existsSync(journalPath), "the journal file exists after the first write");
@@ -139,15 +154,15 @@ check(journal.read({ limit: 0 }).matched === 2, "the match count is unaffected b
 const readback = journal.read({ limit: 10 }).entries[0];
 check(readback.preview === record.preview, "the preview survives a round trip");
 
-console.log("\n--- 6. stats aggregate ---");
+console.log("\n--- 7. stats aggregate ---");
 const stats = journal.stats();
 check(stats.count === 2, "stats counts every record");
 check(stats.byRule["periodic-run"] === 1 && stats.byRule["kgram-repeat"] === 1, "stats group by rule");
 check(stats.byModel["deepseek-v4.1"] === 1 && stats.byModel["other-model"] === 1, "stats group by model");
-check(stats.byDay["2026-01-01"] === 2, "stats group by day");
+check(stats.byDay[localStamp(Date.parse("2026-01-01T00:00:00.000Z")).slice(0, 10)] === 2, "stats group by the reader's local day");
 check(stats.earliest === 1767225600000 && stats.latest === 1767225600001, "stats report the time span");
 
-console.log("\n--- 7. rotation and clear ---");
+console.log("\n--- 8. rotation and clear ---");
 const smallPath = join(scratch, "small.jsonl");
 const small = createJournal({ path: smallPath, maxBytes: 512, warn: (m) => warnings.push(m) });
 for (let i = 0; i < 40; i += 1) small.record({ v: 1, at: i, iso: "2026-01-01T00:00:00.000Z", rule: "periodic-run", pad: "x".repeat(64) });
@@ -158,7 +173,7 @@ check(!existsSync(journalPath), "clear removes the journal file");
 check(journal.read({ limit: 5 }).total === 0, "the journal reads empty after clear");
 check(journal.clear() === false, "clearing an absent journal reports nothing removed");
 
-console.log("\n--- 8. failures never escape ---");
+console.log("\n--- 9. failures never escape ---");
 const warningsBefore = warnings.length;
 const blocked = createJournal({ path: join(scratch, "nested", "\u0000bad", "fires.jsonl"), warn: (m) => warnings.push(m) });
 check(blocked.record(record) === false, "an unwritable path reports failure instead of throwing");
@@ -171,7 +186,7 @@ writeFileSync(join(scratch, "truncated.jsonl"), '{"v":1,"at":1,"rule":"periodic-
 const truncated = createJournal({ path: join(scratch, "truncated.jsonl") });
 check(truncated.read({ limit: 10 }).total === 1, "a truncated tail does not hide the records before it");
 
-console.log("\n--- 9. the maintenance tool ---");
+console.log("\n--- 10. the maintenance tool ---");
 check(LOG_TOOL_NAME === "reasoning_loop_log", "tool name is stable");
 check(LOG_ACTIONS.join(",") === "list,stats,clear,path", "documented actions are stable");
 const tool = createLogTool({ journal: small });

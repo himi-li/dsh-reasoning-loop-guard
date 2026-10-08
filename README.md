@@ -273,6 +273,8 @@ node --input-type=module -e "import { readPluginMeta } from '@deepseek-ai/dsh-ap
 
 未知字段会直接省略，因此旧记录只是字段更少，不会写成 `null`。几个值得留意的：`ttftMs` 把「模型很慢、然后才开始打转」和「从第一个 token 就在打转」分开；`aborted` 记录判定落地前调用方是否已经放弃；`thresholds` 是产生这次判定的**确切配置**——几个月后要复盘一次误报，靠的就是它；`previewRaw` 只在 `preview` 被截断时出现，是未截断的原文尾巴。
 
+**`iso` 存 UTC，界面显示本地时间。** 落盘的 `iso` 是规范的 UTC 形式（`…Z`），因为它必须无歧义；而**你读到的地方一律是本地墙钟时间**——面板的行时间与「时间跨度」、`reasoning_loop_log` 的 `list` 行与 `stats` 的 `span:` 行，都经同一个 `localStamp()` 渲染。这样一条 16:25 的触发就不会看起来像 08:25。同理，`stats` 的「按天」也按**本地日**切分，与行时间一致。
+
 日志是有界的（`journalMaxBytes`，默认 512 KiB → 轮转为 `fires.jsonl.1`），每次写入都包在 try/catch 里，日志故障**只会告警，绝不影响流**。设为 `journal: false` 可整体关闭。
 
 插件还会注册一个只读的维护工具 `reasoning_loop_log`：

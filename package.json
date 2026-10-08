@@ -2,7 +2,7 @@
   "name": "dsh-reasoning-loop-guard",
   "displayName": "DSH Reasoning Loop Guard",
   "description": "Detect and abort repeating reasoning (thinking-loop stalls) in DSH, plus a detailed fire journal, a GUI panel, and opt-in recovery.",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "type": "module",
   "engines": {
     "node": "^22.19.0 || >=24.0.0"

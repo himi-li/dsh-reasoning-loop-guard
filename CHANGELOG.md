@@ -3,6 +3,12 @@
 All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.2] - 2026-10-08
+
+### Fixed
+
+- **触发时间不再按 UTC 显示，界面与工具一律渲染本地时间。** 症状是「日志没记上」：用户在 16:29 看到面板里最新一条写着 `2026-10-08 08:25:02`，以为这次触发丢了。实际上记录**已经写入**——`fires.jsonl` 的末条 `at=1791447902507` 正是本地 `16:25:02`（等于 UTC `08:25:02`），宿主日志同一毫秒有 `[reasoning-loop-guard] line-repeat after 11726 chars … aborting stream`，与用户看到的报错逐字一致。根因是持久化的 `iso` 字段按规范存 UTC（`new Date(now).toISOString()`），而**所有人类可读的界面都直接把这个 UTC 串打印出来**：日志面板的行时间与「时间跨度」统计、`reasoning_loop_log` 工具的 `list` 行与 `stats` 的 `span:` 行。现在新增唯一格式化入口 `localStamp(ms)`（`lib/journal.js` 导出，`lib/client.js` 内联同构实现，因为浏览器端不能 import 宿主），把 epoch 毫秒渲染成本地 `YYYY-MM-DD HH:MM:SS`；`iso` 仍按 UTC 持久化不变。面板行优先用 `at`（原始瞬时值，无需解析），`iso` 仅作旧记录的兜底。**按天汇总同步改为按本地日切分**（`journal.stats().byDay`），否则「按天」表会与它上方显示的行时间互相矛盾。
+
 ## [0.2.1] - 2026-10-08
 
 ### Added

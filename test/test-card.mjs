@@ -302,9 +302,18 @@ for (const key of Object.keys(helpers.STRINGS.en)) {
 }
 check(helpers.fill("{a} of {b}", { a: 1, b: 2 }) === "1 of 2", "fill substitutes every placeholder");
 check(helpers.fill("{a} {missing}", { a: 1 }) === "1 {missing}", "fill leaves unknown placeholders alone");
-check(helpers.formatWhen({ iso: "2026-10-06T12:34:56.789Z" }) === "2026-10-06 12:34:56", "formatWhen trims an ISO stamp");
-check(helpers.formatWhen({ at: 1767225600000 }) === "2026-01-01 00:00:00", "formatWhen falls back to the epoch");
+check(
+  helpers.formatWhen({ iso: "2026-10-06T12:34:56.789Z" }) === helpers.localStamp(Date.parse("2026-10-06T12:34:56.789Z")),
+  "formatWhen renders a stored ISO stamp on the reader's own clock",
+);
+check(
+  helpers.formatWhen({ at: 1767225600000 }) === helpers.localStamp(1767225600000),
+  "formatWhen prefers the epoch and renders it locally",
+);
 check(helpers.formatWhen(undefined) === "?", "formatWhen survives a missing record");
+check(helpers.formatWhen({ iso: "2026-99-99T00:00:00Z" }) === "2026-99-99 00:00:00", "formatWhen falls back to the raw stamp when ISO parsing fails");
+check(helpers.formatWhen({ iso: "short" }) === "?", "formatWhen rejects a stamp too short to be an ISO instant");
+check(helpers.formatWhen({ at: Number.NaN }) === "?", "formatWhen rejects a non-finite epoch");
 check(helpers.measureOf({ rule: "periodic-run", period: 64, units: 6 }) === "period=64 · units=6", "measureOf reports a periodic run");
 check(helpers.measureOf({ rule: "block-repeat", blockLen: 120, count: 3 }) === "block=120 · reuses=3", "measureOf reports a repeated block");
 check(helpers.measureOf({ rule: "line-repeat", lineLen: 14, count: 2 }) === "line=14 · reuses=2", "measureOf reports a repeated line");
@@ -755,7 +764,7 @@ console.log("\n--- 14. one rendered record shows everything the journal kept ---
   cursor = 0;
   const text = flatten(View({ view: "page" })).join(" | ");
 
-  check(text.includes("2026-01-01 00:00:00"), "the record shows its timestamp");
+  check(text.includes(helpers.localStamp(1767225600000)), "the record shows its timestamp in local time");
   check(text.includes("periodic-run"), "the record shows its rule");
   check(text.includes("period=8") && text.includes("units=4"), "the record shows its measure");
   check(text.includes("20692"), "the record shows the offset it fired at");
