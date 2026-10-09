@@ -337,6 +337,8 @@ node --input-type=module -e "import { readPluginMeta } from '@deepseek-ai/dsh-ap
 
 **对工具服务没有硬依赖。** 工具是通过 `ctx.inject(["tools"], …)` 注册的——一种**可选**注入。若写成硬 `inject`，那么在任何没有 tools 服务的宿主上插件都会变成 inactive，等于为了一个诊断功能而把护栏本身也关掉了。
 
+**两条可选臂注入的服务名是 `agents`，不是 `agent`。** `@deepseek-ai/dsh-agent` 把自己的注册表注册为 `super(ctx, "agents")`，所以 `ctx.inject(["agent"], …)` **永远解析不到**：Cordis 在依赖不满足时不会调用回调，连一条告警都不会有。0.2.2 及以前正是写成了单数 `agent`，后果是「自动恢复」与「降低思考强度」两条臂**从未注册**，而 GUI 开关照旧显示「开」——打开自动恢复后中断仍然直接终态失败，日志里一条 `recovery` 都没有。单数 `agent` 只是该插件在 typert 里注册的 **wire 类型名**，不是 Cordis 服务名；`dsh-llm-retry` 挂在同一个 `agent/request-error` 事件上，用的是 `inject = ["agents", …]`。这条已经由 `test/smoke/smoke.mjs` 的两组断言钉住（注入列表必须含 `agents` 且不得含 `agent`；`agents` 解析成功时两条臂必须都注册）。
+
 **零运行时依赖。** 除了声明为 peer 的 DSH 宿主包之外，插件不导入任何东西。
 
 ## 测试
@@ -355,7 +357,7 @@ npm test
 | [`test/test-recovery.mjs`](test/test-recovery.mjs) | 自动恢复臂的契约全在**何时**行动：禁用时让路、只认护栏自己的失败、返回 `{kind:"retry"}` 前必须追加良构消息、必须耗尽每步预算、任何内部故障都要落到 `next()`。 |
 | [`test/test-strip.mjs`](test/test-strip.mjs) | 剥离历史思维链臂的边界判定——每条检查都因「剥掉活跃轮 reasoning 会被 DeepSeek 拒绝」这一失败模式而存在。 |
 | [`test/test-card.mjs`](test/test-card.mjs) | 日志路由的同源栅栏判定、方法与查询参数、上限与关闭态、注册走服务，以及客户端 bundle 的协议形态（在 `window.__ModuleLoader__` 伪装下真的加载它）与卡片的纯函数。 |
-| [`test/smoke/smoke.mjs`](test/smoke/smoke.mjs) | 用桩宿主驱动真实的 `apply()`：配置校验、全局只注册一个 `llm/stream` 监听器、工具注册，以及该工具的端到端行为。 |
+| [`test/smoke/smoke.mjs`](test/smoke/smoke.mjs) | 用桩宿主驱动真实的 `apply()`：配置校验、全局只注册一个 `llm/stream` 监听器、工具注册、该工具的端到端行为，以及**可选注入的服务名**（必须索要 `agents`、不得索要单数 `agent`；`agents` 解析成功时两条可选臂必须都注册且思考强度臂带 `{ prepend: true }`）。 |
 | [`test/smoke/real-protocol.mjs`](test/smoke/real-protocol.mjs) | 真实的 `@deepseek-ai/dsh-llm` 不变量校验门，断言护栏的输出是一条**合法**的流。 |
 
 两个 smoke 套件通过 [`test/smoke/resolve-hook.mjs`](test/smoke/resolve-hook.mjs) 把 `@deepseek-ai/*` 解析到 app 与 profile 的安装位置，因此不必启动 DSH 就能验证宿主侧的那一半。

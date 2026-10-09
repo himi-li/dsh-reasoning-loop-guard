@@ -337,6 +337,8 @@ Set them as **system/user environment variables**, not in `~/.dsh/.env`: DSH's l
 
 **No hard dependency on the tool service.** The tool is registered through `ctx.inject(["tools"], …)` — an *optional* injection. A hard `inject` would leave the plugin inactive on any host without the tools service, disabling the guard itself for the sake of a diagnostic.
 
+**The two optional arms inject `agents`, not `agent`.** `@deepseek-ai/dsh-agent` registers its registry as `super(ctx, "agents")`, so `ctx.inject(["agent"], …)` **never resolves**: Cordis does not call the callback while a dependency is missing, and it raises no warning either. 0.2.2 and earlier asked for the singular `agent`, and the result was that the automatic-recovery and reasoning-effort arms **were never registered** while the GUI switches still read as "on" — turning recovery on left the abort failing terminally with not a single `recovery` line in the log. The singular `agent` is only that plugin's typert **wire type** name, not a Cordis service name; `dsh-llm-retry` sits on the same `agent/request-error` event and injects `["agents", …]`. Two assertions in `test/smoke/smoke.mjs` pin this down (the inject list must contain `agents` and must not contain `agent`; and once `agents` resolves both arms must register).
+
 **Zero runtime dependencies.** The plugin imports nothing outside the DSH host packages it declares as peers.
 
 ## Testing
@@ -355,7 +357,7 @@ Eight suites, all of which must pass:
 | [`test/test-recovery.mjs`](test/test-recovery.mjs) | The recovery arm's contract is all about **when** it acts: it stands aside when disabled, honours only the guard's own failures, must append a well-formed message before returning `{kind:"retry"}`, must exhaust its per-step budget, and must fall through to `next()` on any internal fault. |
 | [`test/test-strip.mjs`](test/test-strip.mjs) | The strip arm's boundary decisions — every check in it exists because removing the active turn's reasoning gets the request rejected by DeepSeek. |
 | [`test/test-card.mjs`](test/test-card.mjs) | The log route's same-origin fence decisions, method and query handling, limits and the disabled state, registration through the service, plus the client bundle's protocol shape (actually imported under a `window.__ModuleLoader__` facade) and the card's pure functions. |
-| [`test/smoke/smoke.mjs`](test/smoke/smoke.mjs) | The real `apply()` driven through a stub host: config validation, exactly one `llm/stream` listener registered globally, tool registration, and the tool's behaviour end to end. |
+| [`test/smoke/smoke.mjs`](test/smoke/smoke.mjs) | The real `apply()` driven through a stub host: config validation, exactly one `llm/stream` listener registered globally, tool registration, the tool's behaviour end to end, and **the optional injects' service names** (it must ask for `agents` and never for the singular `agent`; and once `agents` resolves both arms must register, the effort arm carrying `{ prepend: true }`). |
 | [`test/smoke/real-protocol.mjs`](test/smoke/real-protocol.mjs) | The real `@deepseek-ai/dsh-llm` invariant gate, asserting the guard's output is a *legal* stream. |
 
 The smoke suites resolve `@deepseek-ai/*` to the app and profile install locations through [`test/smoke/resolve-hook.mjs`](test/smoke/resolve-hook.mjs), so the host-side half can be exercised without launching DSH.

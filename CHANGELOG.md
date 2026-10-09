@@ -3,7 +3,11 @@
 All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.2.3] - 2026-10-09
+
+### Fixed
+
+- **「自动恢复」此前从未生效——`ctx.inject(["agent"], …)` 请求的服务名不存在，正确的名字是 `agents`。** `@deepseek-ai/dsh-agent` 把自己的注册表注册为 `super(ctx, "agents")`，因此向 Cordis 索要单数 `agent` **永远解析不到**：`ctx.inject` 的闭包一次都不会执行，挂在它下面的 `agent/request-error`（自动恢复臂）与 `agent/request`（降低思考强度臂）**两条监听器从未注册**——而 GUI 的功能开关照旧显示「开」。症状：把「自动恢复」打开、填好纠正消息与每步重试次数，中断发生后仍然直接以 `[REASONING_LOOP_GUARD]` 终态失败，宿主日志里连一条 `recovery` 记录都没有。单数 `agent` 只是该插件在 typert 里注册的 **wire 类型名**，不是 Cordis 服务名；`dsh-llm-retry` 挂在同一个事件上，用的是 `inject = ["agents", …]`。`test/smoke/smoke.mjs` 新增两组断言钉住它：注入列表必须含 `agents`、不得含 `agent`；且当 `agents` 解析成功时两条臂必须都注册、思考强度臂必须带 `{ prepend: true }`、注册过程不得产生任何告警。
 
 ### Documentation
 

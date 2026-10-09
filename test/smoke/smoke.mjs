@@ -67,6 +67,7 @@ console.log("\n--- apply() registers on llm/stream and the maintenance tool ---"
 const registered = [];
 const warned = [];
 const toolDefs = [];
+const injectedDeps = [];
 // The journal must never touch the real DSH home from a test.
 const scratch = mkdtempSync(join(tmpdir(), "rlg-smoke-"));
 const live = { ...base, journalPath: join(scratch, "fires.jsonl"), settingsPath: join(scratch, "config.json") };
@@ -76,6 +77,7 @@ const ctx = {
   inject: (deps, callback) => {
     // Stand in for Cordis optional injection: hand the callback a child ctx
     // carrying only the services this plugin asks for.
+    injectedDeps.push([...deps]);
     const child = { tools: { register: (definition) => toolDefs.push(definition) } };
     for (const dep of deps) if (child[dep] === undefined) return;
     callback(child);
@@ -95,6 +97,44 @@ check(toolDefs.length === 1, `exactly one tool registered (got ${toolDefs.length
 check(toolDefs[0]?.name === "reasoning_loop_log", "tool is reasoning_loop_log");
 check(typeof toolDefs[0]?.output?.render === "function", "tool declares output.render");
 check(typeof toolDefs[0]?.execute === "function", "tool declares execute");
+// The recovery/effort arms hang off `agents` — the name `@deepseek-ai/dsh-agent`
+// actually registers (`super(ctx, "agents")`). Asking for the singular `agent`
+// resolved nothing, so the callback never ran and BOTH arms were silently
+// unregistered while the GUI switches still read as "on". Pin the name here.
+check(injectedDeps.some((deps) => deps.includes("agents")), `an optional inject asks for the agents service (got ${JSON.stringify(injectedDeps)})`);
+check(!injectedDeps.some((deps) => deps.includes("agent")), "no inject asks for the non-existent singular agent service");
+
+// With `agents` actually present the arms must register: the recovery listener
+// on `agent/request-error` and the effort listener on `agent/request`.
+const armRegistered = [];
+const armWarned = [];
+apply(
+  {
+    logger: { warn: (message) => armWarned.push(message) },
+    on: (event, handler, options) => armRegistered.push({ event, handler, options }),
+    inject: (deps, callback) => {
+      const child = {
+        // An injected child is a full Cordis context: the arms call `scope.on`
+        // on the child itself (NOT on `scope.agents`), so `on` must sit at the
+        // top level. `agents` is only the marker that lets the inject resolve.
+        on: (event, handler, options) => armRegistered.push({ event, handler, options }),
+        agents: {},
+        tools: { register: () => {} },
+        webServer: { register: () => {} },
+      };
+      for (const dep of deps) if (child[dep] === undefined) return;
+      callback(child);
+    },
+  },
+  { ...base, journal: false, logTool: false, settingsPath: join(scratch, "config.json") },
+);
+const requestError = armRegistered.find((entry) => entry.event === "agent/request-error");
+const requestArm = armRegistered.find((entry) => entry.event === "agent/request");
+check(requestError !== undefined, "the recovery arm registers once the agents service resolves");
+check(typeof requestError?.handler === "function", "the recovery arm is a waterfall listener");
+check(requestArm !== undefined, "the effort arm registers once the agents service resolves");
+check(requestArm?.options?.prepend === true, "the effort arm is prepended (it must wrap the core listener)");
+check(armWarned.length === 0, `no arm warned while registering (${armWarned.join(" | ")})`);
 
 // A fake registry accepts any object, which is exactly how a schema DSH
 // rejects slips through: the real `ctx.tools.register` ends in
