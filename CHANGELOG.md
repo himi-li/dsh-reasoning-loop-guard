@@ -7,7 +7,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Fixed
 
-- **`line-repeat` 不再把「引用同一行代码」误判成复读，根因是归一化抹掉了区分两行代码的唯一信息。** 一次真实误报（日志时间 2026-10-09 17:55:47，`workbuddy` / `deepseek-v4.1-flash`，第 2 轮第 21 步）：801 字符的推理片段里有五行——三行普通引用 `if (e.isKeyboardEvent()) {`，外加 diff 的删除行 `-                if (e.isKeyboardEvent()) {` 与新增行 `+                if (e.isKeyboardEvent()) {`。`STRIP = /[\s\p{P}\p{S}]/gu` 把空白、标点、符号全部剥掉，于是这五行**归一化成同一个字符串** `ifeisKeyboardEvent`，凑出「同一行出现 5 次、占窗口 22.6%」，同时越过 `lineCount: 3` 与 `lineShare: 0.1` 两条地板。模型并未循环：它在推理一处代码改动，下一个尝试是 4,084 字符的普通工作，一条判据都不触发；触发点又恰好落在 `minChars` 大小的第一个判定窗口里，几个重复就占了很大比例。会话日志（多帧 zstd，按 magic `28 B5 2F FD` 切分后逐帧 `zlib.zstdDecompressSync`，976 帧 / 2176 条记录）重建出的 801 字符文本，喂给原版 detector 得到 `count=5 lineLen=18 share=0.2261 line="ifeisKeyboardEvent"`，与日志记录**逐字段一致**。
+- **`line-repeat` 不再把「引用同一行代码」误判成复读，根因是归一化抹掉了区分两行代码的唯一信息。** 一次真实误报：801 字符的推理片段里有五行——三行普通引用 `if (e.isKeyboardEvent()) {`，外加 diff 的删除行 `-                if (e.isKeyboardEvent()) {` 与新增行 `+                if (e.isKeyboardEvent()) {`。`STRIP = /[\s\p{P}\p{S}]/gu` 把空白、标点、符号全部剥掉，于是这五行**归一化成同一个字符串** `ifeisKeyboardEvent`，凑出「同一行出现 5 次、占窗口 22.6%」，同时越过 `lineCount: 3` 与 `lineShare: 0.1` 两条地板。模型并未循环：它在推理一处代码改动，下一个尝试是 4,084 字符的普通工作，一条判据都不触发；触发点又恰好落在 `minChars` 大小的第一个判定窗口里，几个重复就占了很大比例。重建该片段喂给原版 detector 得到 `count=5 lineLen=18 share=0.2261 line="ifeisKeyboardEvent"`，与触发记录**逐字段一致**。
 - **修法：按行的种类排除，而不是抬阈值。** 新增
   ```js
   const CODE_LINE = /[{}]|<\/?[A-Za-z!/]|^[ \t]*[-+]{1,3}[ \t]/;
