@@ -10,3 +10,6 @@ Thumbs.db
 *.swp
 .idea/
 .vscode/
+
+# local scratch / work area (probe scripts, session dumps, screenshots, caches)
+_work/
