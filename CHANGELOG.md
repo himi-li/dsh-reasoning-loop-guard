@@ -3,6 +3,23 @@
 All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.4] - 2026-10-09
+
+### Fixed
+
+- **`line-repeat` 不再把「引用同一行代码」误判成复读，根因是归一化抹掉了区分两行代码的唯一信息。** 一次真实误报（日志时间 2026-10-09 17:55:47，`workbuddy` / `deepseek-v4.1-flash`，第 2 轮第 21 步）：801 字符的推理片段里有五行——三行普通引用 `if (e.isKeyboardEvent()) {`，外加 diff 的删除行 `-                if (e.isKeyboardEvent()) {` 与新增行 `+                if (e.isKeyboardEvent()) {`。`STRIP = /[\s\p{P}\p{S}]/gu` 把空白、标点、符号全部剥掉，于是这五行**归一化成同一个字符串** `ifeisKeyboardEvent`，凑出「同一行出现 5 次、占窗口 22.6%」，同时越过 `lineCount: 3` 与 `lineShare: 0.1` 两条地板。模型并未循环：它在推理一处代码改动，下一个尝试是 4,084 字符的普通工作，一条判据都不触发；触发点又恰好落在 `minChars` 大小的第一个判定窗口里，几个重复就占了很大比例。会话日志（多帧 zstd，按 magic `28 B5 2F FD` 切分后逐帧 `zlib.zstdDecompressSync`，976 帧 / 2176 条记录）重建出的 801 字符文本，喂给原版 detector 得到 `count=5 lineLen=18 share=0.2261 line="ifeisKeyboardEvent"`，与日志记录**逐字段一致**。
+- **修法：按行的种类排除，而不是抬阈值。** 新增
+  ```js
+  const CODE_LINE = /[{}]|<\/?[A-Za-z!/]|^[ \t]*[-+]{1,3}[ \t]/;
+  ```
+  （花括号、标记语言标签、行首 diff 标记）命中时该行**不参与「被报告的行」，但仍计入分母**——只从分母里也删掉会反过来抬高代码密集流的占比，是同一个错误的镜像。`lineRepeat()` 里先无条件 `normLen += line.length`，再 `if (CODE_LINE.test(raw)) continue;`。两条被验证过的死路：① 归一化前先剥 diff 标记——`STRIP` 本来就剥 `-` / `+` 与空白，剥与不剥结果完全相同；② 干脆去掉归一化——同一片段仍达 `count=3 · share=11.3%`，照常触发。任何阈值也够不着它：`lineCount` 要从 3 提到 6 才挡得下，而 6 已在真循环占据的区间内；抬 `lineShare` 则会牺牲夹具里的真实检测。
+- **标记集刻意取窄。** 更宽的做法（排除任何括号或运算符，如 `/[(){}\[\];=<>]/`）会连 `The config (see above) is wrong.`、`Let me write (again).`、`A list: [one] and [two] are options.` 一起压制，等于让规则对真实的散文口头禅失明；最终只保留花括号、标记语言标签、行首 diff 标记这三种不会出现在普通散文里的形状（含分号的散文仍被排除，已确认可接受——分号在代码里远比散文常见）。
+- **净收益 2、净损失 0。** 在本机 **3,862 条真实推理流**（20,987,084 字节，含已知真循环）上复核：修复前 `periodic-run` 3 + `line-repeat` 3，修复后只剩 `line-repeat` 2（`count` 30 与 19，未变，仍是同样的真循环）。唯一「少抓」的那条 `idx=3095 len=16862` 是**同形态误报**——从 HTML 里引用的 `<p align="center">` 出现三次、`<source media="(prefers-color-scheme: dark)" …>` 出现三次、`# dsh-reasoning-loop-guard` 出现两次，本该不抓。夹具复核：166 条健康流 0 误报、11 条退化流全部命中的结论不变。
+
+### Documentation
+
+- **两版 README 精简并同步 0.2.4。** `README.md` 401 行 / 40,951 字节 → 303 行 / 35,419 字节，`README.en.md` 401 行 / 44,136 字节 → 308 行 / 39,214 字节：合并重复叙述同一桩故障的两节、删掉「目录」节、把五条判据表与工作原理并成一节、把安装的两个小节并成一段、把配置表按同族字段合并、「关键设计决策」的长段落改为加粗小标题引导。原「为什么 `line-repeat` 要两个条件」整节重写为「三个条件」，补上 801 字符案例、四个候选做法对照表、3,862 流复核结论与标记集取窄的理由；「已知边界」新增一条——**若误报来自代码或标记语言，说明 `CODE_LINE` 标记集不够，那是要改代码、不是调阈值的信号**。
+
 ## [0.2.3] - 2026-10-09
 
 ### Fixed

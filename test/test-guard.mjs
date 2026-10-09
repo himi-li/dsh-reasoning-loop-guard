@@ -386,30 +386,67 @@ if (pruneIfNeeded(now)) {
 const stale = pruneIfNeeded(now) ? this.entries : [];`;
   check(judgeLine(editing) === null, "an identifier on two lines while editing is not a loop");
 
-  // The worst false positive in the corpus, and the reason `lineCount` cannot
-  // drop back to 2: a single 41-character identifier, repeated twice, in a short
-  // stream. Two occurrences are enough for it to reach 19.5% of the window on
-  // length alone, so a share floor by itself would still admit it.
-  //
-  // The filler matters twice over. It has to be genuinely varied (an earlier
-  // version repeated one comment line and was caught by `line-repeat` on THAT
-  // line — a correct fire on a badly built fixture), and it has to be CODE:
-  // normalization strips punctuation, so 2,159 characters of real code reduce to
-  // a few hundred normalized ones, which is exactly why the identifier's share
-  // came out so high. Prose filler would dilute it back below the floor and the
-  // case would prove nothing.
-  const longName = "export function getFilePathByModeInCafs(cafsDir, integrity) {";
-  const codeFiller = Array.from({ length: 20 }, (_unused, i) => `if (cache[${i}] === undefined) { return { id: ${i}, path: join(base, "x") }; }`).join("\n");
-  const twice = `${codeFiller}
-${longName}
-  return join(cafsDir, integrity ? "integrity" : "mode");
-${longName}
-  throw new Error("unreachable");`;
+  // The line-count floor cannot drop back to 2, even with the share floor in
+  // place: one long line repeated twice reaches far enough into the window on
+  // length alone. The fixture has to be PROSE now that code lines are excluded
+  // from reporting — an identifier would be skipped before it was ever counted,
+  // and the case would pass for the wrong reason.
+  const longProse = "The implementation specific configuration value must remain stable across a restart";
+  const proseFiller = Array.from({ length: 9 }, (_unused, i) => `Sentence number ${i} explains an ordinary part of the reasoning in plain words.`).join("\n");
+  const twice = `${proseFiller}
+${longProse}
+A connecting sentence sits between the two occurrences here.
+${longProse}
+Closing prose follows.`;
   const twiceLine = lineRepeat(twice, DEFAULTS.lineMin, 2);
-  check(twiceLine.count === 2, `the long identifier really does occur twice (got ${twiceLine.count})`);
+  check(twiceLine.count === 2, `the long prose line really does occur twice (got ${twiceLine.count})`);
   check(twiceLine.share > DEFAULTS.lineShare, `and twice is enough to clear the share floor on its own (${(twiceLine.share * 100).toFixed(1)}%)`);
   const longVerdict = judgeLine(twice);
-  check(longVerdict === null, `one long identifier twice is not a loop (got ${longVerdict?.rule ?? "null"})`);
+  check(longVerdict === null, `one long prose line twice is not a loop (got ${longVerdict?.rule ?? "null"})`);
+
+  // The code/markup case that motivated excluding such lines from reporting: the
+  // real false positive, five lines from one 801-character reasoning burst that
+  // all normalize to the same string. Normalization erases the indentation, the
+  // diff markers and the punctuation, so the rule cannot tell the three quoted
+  // lines from the diff's removed and added rows.
+  const codeBurst = `${Array.from({ length: 4 }, (_unused, i) => `Step ${i}: the third keyboard event should no longer consume, so find where forwardKey is called.`).join("\n")}
+if (e.isKeyboardEvent()) {
+if (e.isKeyboardEvent()) {
+if (e.isKeyboardEvent()) {
+-                if (e.isKeyboardEvent()) {
++                if (e.isKeyboardEvent()) {`;
+  const burstLine = lineRepeat(codeBurst, DEFAULTS.lineMin, DEFAULTS.lineCount);
+  check(burstLine.line !== "ifeisKeyboardEvent", `the repeated code line is never the reported line (got ${JSON.stringify(burstLine.line.slice(0, 30))})`);
+  check(burstLine.count < DEFAULTS.lineCount, `and the code burst reports no repeat at all (got ${burstLine.count})`);
+  check(judgeLine(codeBurst) === null, `the real code-diff false positive is inert (got ${judgeLine(codeBurst)?.rule ?? "null"})`);
+
+  // ...and neither is a code line repeated far more than any count floor. The
+  // exclusion is categorical, not a raised threshold, so this must hold however
+  // many times the line appears.
+  const varied = Array.from({ length: 30 }, (_unused, i) => `Unique prose sentence number ${i} describes an ordinary detail of the work.`).join("\n");
+  const manyCode = `${varied}\n${"if (e.isKeyboardEvent()) {\n".repeat(40)}`;
+  check(lineRepeat(manyCode, DEFAULTS.lineMin, DEFAULTS.lineCount).count === 1, "a code line repeated 40 times is still not the reported line");
+  const manyDiff = `${varied}\n${"-                if (e.isKeyboardEvent()) {\n".repeat(40)}`;
+  check(lineRepeat(manyDiff, DEFAULTS.lineMin, DEFAULTS.lineCount).count === 1, "a diff row repeated 40 times is still not the reported line");
+  const manyTag = `${varied}\n${'<p align="center">\n'.repeat(40)}`;
+  check(lineRepeat(manyTag, DEFAULTS.lineMin, DEFAULTS.lineCount).count === 1, "a markup tag repeated 40 times is still not the reported line");
+  // The control: the same shape with a prose line still reports the repeat, so
+  // the exclusion is about the line's kind and not the buffer producing it.
+  const manyProse = `${varied}\n${"Let me write the final answer now\n".repeat(40)}`;
+  check(lineRepeat(manyProse, DEFAULTS.lineMin, DEFAULTS.lineCount).count === 40, "a prose line repeated 40 times is still reported");
+
+  // Prose that merely contains brackets or comparisons must stay eligible: a
+  // wider marker set that excluded any bracket or operator would blind the rule
+  // to these.
+  const proseShapes = [
+    "The config (see above) is wrong.",
+    "Let me write (again).",
+    "A list: [one] and [two] are options.",
+    "Check a < b and c > d when comparing.",
+  ];
+  for (const shape of proseShapes) {
+    check(!/[{}]|<\/?[A-Za-z!/]|^[ \t]*[-+]{1,3}[ \t]/.test(shape), `prose with brackets stays eligible: ${JSON.stringify(shape)}`);
+  }
 
   // The genuine loop the corpus is full of: a short tic, repeated far more than
   // the floor, filling the window. This is the shape that must still fire.
