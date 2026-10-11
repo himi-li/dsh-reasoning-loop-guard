@@ -13,3 +13,6 @@ Thumbs.db
 
 # local scratch / work area (probe scripts, session dumps, screenshots, caches)
 _work/
+
+# local-only documentation (machine paths, session ids, registry details)
+docs/
