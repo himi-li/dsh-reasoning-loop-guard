@@ -10,6 +10,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import {
+  CODE_LINE,
   DEFAULTS,
   blockRepeat,
   createDetector,
@@ -443,10 +444,28 @@ if (e.isKeyboardEvent()) {
     "Let me write (again).",
     "A list: [one] and [two] are options.",
     "Check a < b and c > d when comparing.",
+    "Sentence number 7 explains the second half of the plan in plain words.",
   ];
   for (const shape of proseShapes) {
-    check(!/[{}]|<\/?[A-Za-z!/]|^[ \t]*[-+]{1,3}[ \t]/.test(shape), `prose with brackets stays eligible: ${JSON.stringify(shape)}`);
+    check(!CODE_LINE.test(shape), `prose with brackets stays eligible: ${JSON.stringify(shape)}`);
   }
+
+  // The second real false positive: one Java statement quoted four times, with
+  // no brace and no diff marker on the line. Braces and diff rows cannot see it,
+  // so the marker set grew a trailing semicolon and a dotted call chain.
+  const java = "StarSystemAPI sys = (StarSystemAPI)Global.getSector().getPlayerFleet().getContainingLocation();";
+  const javaBurst = `${Array.from({ length: 4 }, (_unused, i) => `Step ${i}: read the current system before adding anything to it.`).join("\n")}
+${java}
+then the planet is added to that system.
+${java}
+a second command adds an asteroid belt instead.
+${java}
+and a third adds a nebula at the same location.
+${java}
+finally a ring.`;
+  const javaLine = lineRepeat(javaBurst, DEFAULTS.lineMin, DEFAULTS.lineCount);
+  check(javaLine.count < DEFAULTS.lineCount, `a quoted Java statement is never the reported line (got ${javaLine.count})`);
+  check(judgeLine(javaBurst) === null, `the quoted-statement false positive is inert (got ${judgeLine(javaBurst)?.rule ?? "null"})`);
 
   // The genuine loop the corpus is full of: a short tic, repeated far more than
   // the floor, filling the window. This is the shape that must still fire.
@@ -497,6 +516,47 @@ tail prose.`;
   const block = blockRepeat(`${blockA}${blockB}${blockA}${blockB}${blockA}`, 100, 2);
   check(block.count === 3, `blockRepeat reports the real maximum, not the threshold (got ${block.count})`);
   check(block.block === blockA, "blockRepeat reports the worst block itself");
+
+  // Co-occurrence is not repetition. Four occurrences of one block at irregular
+  // gaps is what the second batch of real false positives looked like: four
+  // different `runcode` commands that share the boilerplate reading the current
+  // star system. The chain length must collapse even though the raw count does
+  // not, and the raw count must still be reported so the fire stays reviewable.
+  //
+  // The filler has to be genuinely aperiodic. Sampled letters that cycle with
+  // period 26 look varied but make every 100-character window a rotation of the
+  // same block, which inflates the raw count for free — the earlier
+  // `mkBlock`/`mkFiller` in this file do exactly that, which is harmless where
+  // they are only used as an exact repeated block and fatal here.
+  const mkRandom = (seed, len) => {
+    let state = seed >>> 0;
+    return Array.from({ length: len }, () => {
+      state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+      return String.fromCharCode(97 + ((state >>> 16) % 26));
+    }).join("");
+  };
+  const shared = mkRandom(3, 100);
+  const scatteredText = `${shared}${mkRandom(10, 130)}${shared}${mkRandom(11, 90)}${shared}${mkRandom(12, 250)}${shared}`;
+  const scattered = blockRepeat(scatteredText, 100, 2);
+  check(scattered.rawCount >= 4, `the scattered blocks really do co-occur (rawCount ${scattered.rawCount})`);
+  check(scattered.block === shared, "the worst block found is the shared one");
+  check(scattered.count < 4, `but co-occurrence is not an equal-stride chain (chain ${scattered.count})`);
+
+  // The contrast: a genuine loop emits the same block at a constant period, so
+  // the chain reaches the full occurrence count.
+  const evenFiller = mkRandom(13, 100);
+  const looped = `${shared}${evenFiller}${shared}${evenFiller}${shared}${evenFiller}${shared}`;
+  const loopChain = blockRepeat(looped, 100, 2);
+  check(loopChain.count === 4, `an equal-stride repeat reports the full chain (got ${loopChain.count})`);
+  check(loopChain.rawCount === 4, `and its raw count agrees (got ${loopChain.rawCount})`);
+
+  // A unit that is itself a repetition is a pattern being typed out, not a
+  // structure that recurs — the model writing a 6x6 tile as thirty-six `x`.
+  // Rejecting it must not cost real detection: a primitive unit of the same
+  // length still fires.
+  check(periodicRun("loopword".repeat(6), 8, 400).units === 6, "a primitive unit still counts as a periodic loop");
+  check(periodicRun("xxxxxxxx".repeat(6), 8, 400).units === 0, "a unit that is one character repeated is rejected");
+  check(periodicRun("abababab".repeat(6), 8, 400).units === 0, "a unit with an internal period is rejected");
 }
 
 console.log("\n--- 4. message rendering (one line per rule) ---");

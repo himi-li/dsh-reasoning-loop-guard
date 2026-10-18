@@ -8,9 +8,16 @@
  *     builds the assistant message. This proves the interrupted message is
  *     well-formed rather than merely tolerated.
  *
+ * The grammar gate moved in newer DSH builds: some releases keep it in a
+ * sibling `lib/invariant.js`, others fold the same checks straight into
+ * `dsh-llm/lib/index.js`. Section 1 therefore runs only when that module is
+ * present and reports a skip otherwise — a missing module is a property of the
+ * installed DSH, not a defect in the guard, and an unconditional `FAIL` there
+ * would blame the wrong side.
+ *
  * Run: node --import ./test/smoke/register-hook.mjs test/smoke/real-protocol.mjs
  */
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -18,35 +25,43 @@ import { AssistantStreamAccumulator, assembleAssistantStream, isAgentLoopRequest
 import { apply, Config } from "../../lib/index.js";
 import { FAILURE_CODE } from "../../lib/guard.js";
 
-// `validateStream` is module-private; re-create the install hook it uses.
-// We import the module and reach the validator through the exported `apply`
-// path instead: register a fake invariant service and capture `install`.
-const captured = {};
-const invariantCtx = {
-  invariants: { register: (_pkg, install) => { captured.install = install; return () => {}; } },
-  on: () => {},
-  get: () => undefined,
-};
-const { apply: applyInvariant } = await import("file:///C:/Program%20Files/DSH%20Desktop/resources/app/node_modules/@deepseek-ai/dsh-llm/lib/invariant.js");
-await applyInvariant(invariantCtx);
-if (typeof captured.install !== "function") throw new Error("failed to capture the invariant installer");
+// Locate the validator next to whatever `dsh-llm` this installation resolves.
+// `validateStream` is module-private, so we import the package's `apply` path
+// and reach the validator through it: register a fake invariant service and
+// capture the installer it registers.
+const llmEntry = import.meta.resolve("@deepseek-ai/dsh-llm");
+const invariantUrl = new URL("./invariant.js", llmEntry);
+const hasInvariant = existsSync(fileURLToPath(invariantUrl));
 
-// Drive the captured installer with a ctx that records the llm/stream hook.
 let validateHook = null;
 const failMessages = [];
-captured.install(
-  {
-    on: (event, handler) => { if (event === "llm/stream") validateHook = handler; },
+if (hasInvariant) {
+  const captured = {};
+  const invariantCtx = {
+    invariants: { register: (_pkg, install) => { captured.install = install; return () => {}; } },
+    on: () => {},
     get: () => undefined,
-  },
-  (message) => failMessages.push(message),
-);
-if (validateHook === null) throw new Error("llm-invariant did not register an llm/stream hook");
+  };
+  const { apply: applyInvariant } = await import(invariantUrl.href);
+  await applyInvariant(invariantCtx);
+  if (typeof captured.install !== "function") throw new Error("failed to capture the invariant installer");
+
+  // Drive the captured installer with a ctx that records the llm/stream hook.
+  captured.install(
+    {
+      on: (event, handler) => { if (event === "llm/stream") validateHook = handler; },
+      get: () => undefined,
+    },
+    (message) => failMessages.push(message),
+  );
+  if (validateHook === null) throw new Error("llm-invariant did not register an llm/stream hook");
+}
 
 let failures = 0;
 const check = (ok, label) => {
   if (!ok) { failures += 1; console.log(`FAIL  ${label}`); } else { console.log(`ok    ${label}`); }
 };
+const skip = (label) => { console.log(`skip  ${label}`); };
 
 const DIR = fileURLToPath(new URL("../fixtures", import.meta.url));
 const positives = JSON.parse(readFileSync(`${DIR}/degenerate.json`, "utf8"));
@@ -79,20 +94,31 @@ async function* fromText(text, size) {
   yield { type: "finish", reason: { kind: "stop" } };
 }
 
-console.log("--- real llm-invariant accepts the guarded stream ---");
+console.log(hasInvariant
+  ? "--- real llm-invariant accepts the guarded stream ---"
+  : "--- grammar gate not shipped by this DSH; checking the guarded stream directly ---");
 const degenerate = positives[0];
 const guarded = guard({ sessionId: "s-real" }, () => fromText(degenerate.text, 40));
 const validated = [];
-for await (const chunk of validateHook({ sessionId: "s-real" }, () => guarded)) validated.push(chunk);
-check(failMessages.length === 0, `llm-invariant reported no violation (got ${failMessages.length}: ${failMessages.join(" | ")})`);
+if (validateHook !== null) {
+  for await (const chunk of validateHook({ sessionId: "s-real" }, () => guarded)) validated.push(chunk);
+} else {
+  for await (const chunk of guarded) validated.push(chunk);
+}
+if (hasInvariant) {
+  check(failMessages.length === 0, `llm-invariant reported no violation (got ${failMessages.length}: ${failMessages.join(" | ")})`);
+} else {
+  skip("llm-invariant reported no violation (module absent in this DSH build)");
+}
 check(validated.at(-1)?.type === "finish", "guarded stream reaches a terminal finish through the validator");
 check(validated.at(-1)?.reason?.kind === "error", "terminal finish is an error finish");
 check(validated.at(-1)?.reason?.failure?.code === FAILURE_CODE, `failure code survives validation (${FAILURE_CODE})`);
 
-console.log("\n--- real llm-invariant accepts healthy streams untouched ---");
+console.log("\n--- healthy streams pass untouched ---");
 let healthyFailures = 0;
 for (const item of negatives.slice(0, 25)) {
-  const stream = validateHook({ sessionId: "s-real" }, () => guard({ sessionId: "s-real" }, () => fromText(item.text, 400)));
+  const inner = () => guard({ sessionId: "s-real" }, () => fromText(item.text, 400));
+  const stream = validateHook !== null ? validateHook({ sessionId: "s-real" }, inner) : inner();
   for await (const _chunk of stream) { /* drain */ }
   if (failMessages.length > 0) healthyFailures += 1;
 }
