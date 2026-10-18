@@ -975,6 +975,138 @@ console.log("\n--- 15. the record list folds, newest open ---");
   globalThis.fetch = originalFetch;
 }
 
+console.log("\n--- 16. the abort pop-up rides the event stream ---");
+{
+  // The feed is a thin adapter over EventSource, so a fake one is enough to
+  // pin both the parsing rules and the teardown.
+  const opened = [];
+  class FakeEventSource {
+    constructor(path) {
+      this.path = path;
+      this.listeners = new Map();
+      this.closed = false;
+      opened.push(this);
+    }
+    addEventListener(name, listener) {
+      if (!this.listeners.has(name)) this.listeners.set(name, new Set());
+      this.listeners.get(name).add(listener);
+    }
+    removeEventListener(name, listener) {
+      this.listeners.get(name)?.delete(listener);
+    }
+    close() {
+      this.closed = true;
+    }
+    emit(payload) {
+      for (const listener of this.listeners.get("message") ?? []) listener({ data: payload });
+    }
+  }
+
+  check(helpers.EVENTS === "/reasoning-loop-guard/events", "the feed has its own route");
+
+  const feed = helpers.createFireFeed(helpers.EVENTS, FakeEventSource);
+  const seen = [];
+  const detach = feed.subscribe((record) => seen.push(record));
+
+  check(opened.length === 1, "subscribing opens one stream");
+  check(opened[0].path === helpers.EVENTS, "the stream points at the event route");
+
+  opened[0].emit(JSON.stringify({ type: "fire", record: { rule: "line-repeat" } }));
+  check(seen.length === 1 && seen[0].rule === "line-repeat", "a fire frame reaches the listener");
+
+  // Everything else on this path is noise: the route only ever sends fires, but
+  // a proxy or a future frame kind must not be able to break the pop-up.
+  opened[0].emit(JSON.stringify({ type: "other", record: { rule: "nope" } }));
+  opened[0].emit("not json");
+  opened[0].emit(JSON.stringify({ type: "fire" }));
+  check(seen.length === 1, "non-fire frames are ignored");
+
+  detach();
+  check(opened[0].closed === true, "unsubscribing closes the stream");
+  opened[0].emit(JSON.stringify({ type: "fire", record: { rule: "line-repeat" } }));
+  check(seen.length === 1, "a closed stream delivers nothing more");
+
+  // A host without EventSource gets a silent no-op feed, not a crash.
+  const absent = helpers.createFireFeed(helpers.EVENTS, undefined);
+  const harmless = absent.subscribe(() => {
+    throw new Error("should never run");
+  });
+  check(typeof harmless === "function", "a missing EventSource still returns a disposer");
+
+  // The view: nothing rendered before a firing, one Toast after.
+  let cursor = 0;
+  const hookSlots = [];
+  const fakeReact = {
+    createElement: (type, props, ...children) => ({
+      type,
+      props: props ?? {},
+      children: children.flat().filter((child) => child !== null && child !== undefined),
+    }),
+    useState: (initial) => {
+      if (cursor < hookSlots.length) return hookSlots[cursor++];
+      const slot = [initial, (value) => {
+        slot[0] = typeof value === "function" ? value(slot[0]) : value;
+      }];
+      hookSlots.push(slot);
+      cursor += 1;
+      return slot;
+    },
+    useRef: (initial) => {
+      if (cursor < hookSlots.length) return hookSlots[cursor++];
+      const slot = { current: initial };
+      hookSlots.push(slot);
+      cursor += 1;
+      return slot;
+    },
+    useEffect: (fn) => {
+      if (cursor < hookSlots.length) {
+        cursor += 1;
+        return;
+      }
+      hookSlots.push(null);
+      cursor += 1;
+      fn();
+    },
+    useSyncExternalStore: (_subscribe, read) => read(),
+  };
+  const Toast = function Toast() {};
+  const ui = {
+    Toast,
+    IconWarningOutlineRegular: function IconWarningOutlineRegular() {},
+  };
+
+  const stream = [];
+  const handFeed = { subscribe: (onFire) => (stream.push(onFire), () => {}) };
+  const View = helpers.FireToast(fakeReact, ui, { current: null }, handFeed);
+
+  cursor = 0;
+  check(View() === null, "nothing is drawn before the first firing");
+
+  stream[0]({ rule: "line-repeat", lineLen: 18, count: 5, share: 0.2261 });
+  cursor = 0;
+  const first = View();
+  check(first !== null && first.type === Toast, "a firing draws one Toast");
+  const firstText = String(first.props.text);
+  check(firstText.includes(helpers.STRINGS.en.notifyTitle), "the pop-up carries the built-in title");
+  check(firstText.includes("line-repeat"), "the pop-up names the rule that fired");
+  check(firstText.includes("share=22.6%"), "the pop-up carries the measurement");
+  check(typeof first.props.onDone === "function", "the pop-up can retire itself");
+  const firstKey = first.props.key;
+
+  // The key is the whole point: a second fire during an existing pop-up must
+  // remount rather than inherit the first one's remaining lifetime.
+  stream[0]({ rule: "periodic-run", period: 8, units: 4 });
+  cursor = 0;
+  const second = View();
+  check(String(second.props.text).includes("periodic-run"), "a second firing replaces the text");
+  check(String(second.props.text).includes("period=8"), "and carries its own measurement");
+  check(second.props.key !== firstKey, "a second firing gets a fresh key, so its hold restarts");
+
+  second.props.onDone();
+  cursor = 0;
+  check(View() === null, "retiring the pop-up returns to nothing");
+}
+
 rmSync(scratch, { recursive: true, force: true });
 
 console.log(failures === 0 ? "\nALL CARD CHECKS PASSED" : `\n${failures} CARD CHECK(S) FAILED`);

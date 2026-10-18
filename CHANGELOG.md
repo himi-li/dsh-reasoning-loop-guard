@@ -3,6 +3,29 @@
 All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.5] - 2026-10-18
+
+### Fixed
+
+- **「窗口里出现过几次」不是复读的判据——一次会话连续五次误报，三条计数判据各自缺一层。** 判别量此前只看**一个窗口内的共现次数**，而真正的复读是**时间里**的重复：等距推进，或一直延续到尾部。三处现场各需不同答案：① 推理里四次引用同一行 Java 语句 `StarSystemAPI sys = (StarSystemAPI)Global…getContainingLocation();`，被 `line-repeat` 判为 `count=4`、`share=10.2%`，刚过两条地板——四条引用散布在整个窗口里，间距 **424 / 602 / 259**，毫无节律；② 四条并列的 `runcode` 命令（加行星 / 小行星带 / 星云 / 行星环）共享读当前星系的前缀，同一 100 字符块出现 4 次，间距 **1130 / 359 / 742**，是并列命令而非复读；③ 模型在写 6×6 图块的字面量 `"xxxxxxxx…"`，`periodic-run` 报 `units=4`、`period=8`，而单元 `xxxxxxxx` 本身就是**同一个字符的重复**——它在打字，不是在循环。
+- **修法一：`CODE_LINE` 补上「行尾分号」与「点号调用链」。** 标记集加宽为
+  ```js
+  export const CODE_LINE = /[{}]|<\/?[A-Za-z!/]|^[ \t]*[-+]{1,3}[ \t]|;\s*$|[A-Za-z_$][\w$]*\.[\w$]+\(/;
+  ```
+  命中时该行**不参与「被报告的行」，但仍计入分母**——只从分母里也删掉会反过来抬高代码密集流的占比，是 0.2.4 就写明的同一个错误的镜像。`lineRepeat()` 仍是无条件先累加 `normLen` 再 `continue`。
+- **修法二：`block-repeat` 要求重复块等距出现。** 新增 `positionsOf(norm, unit)` 与 `strideChain(positions)`，`blockRepeat()` 改为返回最长等距链的长度作为 `count`，原始出现次数留在 `rawCount` 里；`judge` 的 block 分支同步带上 `rawCount`，所以日志仍然说得出「它其实出现了几次」。等距是「并列命令」与「复读」的判别量：并列命令的间距由内容长度决定，不可能相等。
+- **修法三：单元本身是更短串的整数次重复时，`periodic-run` 直接否决。** 新增 `isRepeatedUnit(unit)`，`periodicRun()` 末尾在算出的 `units` 非零时再判一次，命中则返回 `{ units: 0, period: 0 }`。这样 `"xxxxxxxx"`（1 个字符重复 8 次）、`"abababab"` 不再算周期单元，而语料里三条真 `periodic-run` 命中全部是**原始**单元（`prim=true`），因此否决规则零损失。
+- **三处都是分类判断，不是抬阈值。** 抬阈值已被实测排除：`lineCount` 要从 3 提到 6 才挡得住第一例，而 6 已在真循环占据的区间内。复核口径：在同一批语料上（chunk 7 / 41 / 200 三档各跑一遍），三处修改前后的**触发集合逐字节相同**（`count` 29 / 19 的两条 `line-repeat`、`periodic-run` 的两条），夹具仍是 166 健康 0 误报 / 11 退化全命中，而五条误报全部转为 inert。
+
+### Added
+
+- **每次中断后弹一条提示，说明是哪条判据触发的。** 此前中断只留下终态错误与日志里的一行，用户得自己去翻日志才知道「刚刚那一下是谁拦的、测到了多少」。新增开关 `notify.enabled`（默认 `true`）：宿主侧在 `lib/events.js` 里维护一个进程内的触发广播，并注册 `GET /reasoning-loop-guard/events` 的 SSE 端点，每次触发推一帧 `{"type":"fire","record":…}`；web 半在 `shell.overlay` 槽位挂一个 `Toast`，开一个 `EventSource` 订阅它。**它不改变任何发给 provider 的东西**，也不改变纠正消息的发送者或内容——只把「刚刚发生过一次中断」这件事说出来。**为什么不是轮询日志**：要么间隔短到每秒一个请求，要么延迟久到用户会把这次中断归到别处；**为什么通道不是日志**：日志关掉或写失败时提示照样要发——日志是事后记录，这是实时信号。开关**每次触发时重新读取**，页面开着不动、改设置也立刻生效。事件路由与日志路由共用同一道同源回环栅栏（非回环 `Host`、`Sec-Fetch-Site: cross-site`、跨源 `Origin` 一律 `403`），只接受 `GET` / `HEAD`；订阅者抛异常只摘掉它自己，路由被销毁时一并断开它持有的连接。设置面板因此从五个区块变成六个，可编辑键从七个变成八个。
+- **`test/test-events.mjs`（第 9 套测试）** 钉住事件通道的六条承重性质：抛异常的订阅者不影响其他人、同源栅栏与方法限制、断开时解绑、开关逐次重读、销毁路由时关闭连接，以及帧的形状。`test/test-guard.mjs` 新增「共现不是复读」的三条分类断言（代码行不被报告、非等距的块只算 2、非原始单元不算周期），`test/test-card.mjs` 加第 16 节（角落提示的帧解析与 key 重播），`test/test-settings.mjs` 两处 7→8。
+
+### Documentation
+
+- **两版 README 同步 0.2.5，并新增「一次窗口不是一个循环：第二层判别」整节。** `README.md` 303 → 325 行，`README.en.md` 308 → 330 行。新增内容：五条判据表的定义栏补上三个新条件、开头加一段「一条窗口内的共现不是复读」的导读、新增三行对照表（现场 / 旧判据看到的 / 实际发生的事 / 修法）与复核口径、配置表加 `notify.enabled`、功能开关从三个变四个并补上中断提示的机制与代价、文件表加 `lib/events.js`、同源栅栏一节改为「两条路由都自带栅栏」、测试表从八套改九套并补上三条分类断言。`test/smoke/real-protocol.mjs` 的说明补上「该构建若没有独立的 `invariant.js`，这一项自动降级为 skip 而不是失败」。
+
 ## [0.2.4] - 2026-10-09
 
 ### Fixed

@@ -34,13 +34,15 @@ Every `every` characters, five rules are evaluated over rolling buffers:
 
 | Rule | Definition | Measured peak (11 positive / 166 negative) | Threshold |
 | --- | --- | --- | --- |
-| `periodic-run` (primary) | The buffer tail holds ≥ `minUnits` **consecutive identical units** of period p ∈ [8, 400] | positives **0..8** units, negatives **0..2** | 4 |
-| `block-repeat` | The same `blockMin`-character block occurs ≥ `blockCount` times in the window (across lines and formatting) | positives **0..2**, negatives **0..0** | 4 |
-| `line-repeat` | The same **prose** line (≥ `lineMin` characters) occurs ≥ `lineCount` times **and** those repeats occupy ≥ `lineShare` of the window | positives **2..2**, negatives **0..0** | 3 + 10% |
+| `periodic-run` (primary) | The buffer tail holds ≥ `minUnits` **consecutive identical units** of period p ∈ [8, 400]; a unit that is itself a shorter string repeated is a typed-out pattern, not a loop, and does not count | positives **0..8** units, negatives **0..2** | 4 |
+| `block-repeat` | The same `blockMin`-character block occurs ≥ `blockCount` times in the window, **at an equal stride** | positives **0..2**, negatives **0..0** | 4 |
+| `line-repeat` | The same **prose** line (≥ `lineMin` characters) occurs ≥ `lineCount` times **and** those repeats occupy ≥ `lineShare` of the window; code, markup and diff rows are measured but never reported | positives **2..2**, negatives **0..0** | 3 + 10% |
 | `kgram-repeat` | The last `kgram` characters occur ≥ `kgramThreshold` times in the window | positives **1..5**, negatives **1..1** | 12 |
 | `filler-run` (last resort) | The **raw** text ends with ≥ `fillerRun` consecutive decoration characters (whitespace / punctuation / symbols) | see "Decoration is not a loop" below | 400 |
 
 The rules are **disjunctive**: a positive need not trip any particular one, only reach any threshold. Of the 11 recorded failures, **2 were caught by `periodic-run` and 9 by `line-repeat`**; the best ratio across negatives only reaches **0.50** while the lowest positive reaches **1.00**. **Only `reasoning-delta` is measured, never `block-end`** — the latter replays the whole block text, which would manufacture the very repetition being looked for. **`text-delta` is never measured**: ordinary long output (tables, code) can legitimately repeat, and a missed detection is better than a false abort.
+
+> **Co-occurrence inside one window is not a loop.** The three counting rules above originally only asked "how many times did this appear in the window". One real session produced 5 false fires in a row from exactly that mistake: the model citing the same Java statement repeatedly while reasoning, several parallel `runcode` commands sharing a prefix, and a literal block of 36 `x` characters it was genuinely typing out. A loop is a repetition **in time** — advancing at a constant stride, or continuing to the tail. That is why the discriminators now come in layers, below.
 
 ### Why `line-repeat` needs three conditions
 
@@ -75,6 +77,20 @@ all normalize to `ifeisKeyboardEvent`, so "the same line occurs 5 times, occupyi
 Re-checked against **3,862 real reasoning streams from this machine**: the fix removes that fire and one other false positive of the same shape (three quoted `<p align="center">` lines from HTML) and changes **nothing else** — the fixtures still score 166 healthy with 0 false positives and 11 degenerate all detected, and the corpus's two `line-repeat` fires are the same real loops (`count` 30 and 19, unchanged). The marker set is deliberately narrow — braces, markup tags, a leading diff marker — none of which occur in ordinary prose; a wider rule (excluding any bracket or operator) would also suppress `The config (see above) is wrong.`, blinding the rule to genuine prose tics.
 
 This also fixed a semantic defect: `line-repeat` / `block-repeat` used to return at the first qualifying unit, so the `count` in the journal always equalled the threshold and never reported the real repetition count. Both now scan the whole buffer for the largest repeating unit, so `count` is a true measurement.
+
+### One window is not a loop: the second layer
+
+Five false fires in one session each exposed the same false premise, but needed three different answers:
+
+| What happened | What the old rule saw | What was really going on | Fix |
+| --- | --- | --- | --- |
+| The same Java statement cited four times (`StarSystemAPI sys = (StarSystemAPI)Global…getContainingLocation();`) | `line-repeat`: `count=4`, `share=10.2%`, just over both floors | Four citations spread across the window at gaps of **424 / 602 / 259** — no rhythm at all | Recognize the line as code: `CODE_LINE` gains a **trailing semicolon** and a **dotted call chain** |
+| Four parallel `runcode` commands (add planet / asteroid belt / nebula / ring) sharing the prefix that reads the current system | `block-repeat`: the same 100-character block 4 times | Gaps of **1130 / 359 / 742** — parallel commands, not a loop | Require repeats **at an equal stride** (`count` now reports the longest equal-stride chain; the raw occurrence count survives as `rawCount`) |
+| The model writing a 6×6 tile literal `"xxxxxxxx…"` | `periodic-run`: `units=4`, `period=8` | The unit `xxxxxxxx` is itself **one character repeated** — it was typing, not looping | Reject a unit that is itself an integer repeat of a shorter string (`isRepeatedUnit`) |
+
+All three are **class judgments**, not raised thresholds. Raising thresholds had already been ruled out by measurement: `lineCount` would have to go from 3 to 6 to stop the first case, and 6 already sits inside the range real loops occupy.
+
+Verification: on the same corpus, run at chunk sizes 7 / 41 / 200, the fire set is **byte-identical before and after** the three changes (the two `line-repeat` fires at `count` 29 / 19 and the two `periodic-run` fires), the fixtures still score 166 healthy with 0 false positives and 11 degenerate all detected, and all five false fires turn inert.
 
 ### Why the text is normalized first
 
@@ -153,6 +169,8 @@ Every field can be overridden in the profile's `cordis.patch.yml`:
           value: low               # off | low | high | max
         stripHistory:
           enabled: false           # strip past turns' thinking, keep the active turn
+        notify:
+          enabled: true            # show a corner pop-up on each abort
 ```
 
 | Field | Default | Meaning |
@@ -170,22 +188,24 @@ Every field can be overridden in the profile's `cordis.patch.yml`:
 | `settingsPath` | `""` | Where the feature-switch config file lives; set in the patch only. |
 | `recovery.*` | `false` / `""` / `2` | Append a corrective message and retry the same step after an abort; automatic recoveries per step (0–10). |
 | `effort.*` | `false` / `low` | Write the request's `reasoningEffort` back, at the chosen level: `off` / `low` / `high` / `max`. |
+| `notify.enabled` | `true` | After each abort, show a short pop-up in the corner of the web UI naming the rule that fired. |
 | `stripHistory.enabled` | `false` | Strip past turns' thinking, keeping only the active turn. |
 
 `validateConfig()` rejects configurations that would **silently fail to work** — `kgram > window`, `minPeriod >= maxPeriod`, `periodTail < 2 * maxPeriod`, an empty `failureCode`, a non-positive `every`, and so on — with a message naming the offending field.
 
 ## Feature switches
 
-The `enabled`, `settingsPath` and three switches' six fields above are also editable **in the GUI** — except `settingsPath`, which is set only in the patch and merely shown **read-only**. Open this plugin on the Plugins page and, below the trigger-log panel, the detail view gains five blocks — **loop guard** (the core switch), **automatic recovery**, **lower reasoning effort**, **strip past thinking**, and a read-only **config file** path. Save and the values are written to `$DSH_HOME/dsh-reasoning-loop-guard/config.json`.
+The `enabled`, `settingsPath` and seven switch fields above are also editable **in the GUI** — except `settingsPath`, which is set only in the patch and merely shown **read-only**. Open this plugin on the Plugins page and, below the trigger-log panel, the detail view gains six blocks — **loop guard** (the core switch), **automatic recovery**, **lower reasoning effort**, **strip past thinking**, **notify on abort**, and a read-only **config file** path. Save and the values are written to `$DSH_HOME/dsh-reasoning-loop-guard/config.json`.
 
-**The core guard defaults to on; all three arms default to off.** The core switch is the only key whose default is `true` — it *is* the plugin; the three arms each change behaviour beyond the guard itself, so the default takes the conservative side. **Turn the core guard off and the three arms go inert with it**: they can only ever react to a failure the guard itself raised, and once the guard watches no stream it raises none.
+**The core guard and the abort notice default to on; the three arms default to off.** The core switch *is* the plugin; the notice only puts a line on screen and changes nothing sent to the provider, so it is on too. The three arms each change behaviour beyond the guard itself, so the default takes the conservative side. **Turn the core guard off and the three arms go inert with it**: they can only ever react to a failure the guard itself raised, and once the guard watches no stream it raises none.
 
-**The core switch is not the same thing as the patch key of the same name, but the two never fight.** `enabled: false` in the patch means "register no hooks at all"; it is read once at load. The `enabled` in the settings file is read **per request** by the stream listener. The test is "**only an explicit `false` turns it off**": a missing key means "as shipped", i.e. on — so an older `config.json` can never be misread as a shutdown. **Saving needs no restart**: `config.json` overrides the patch **key by key**, and every read folds again, so the change takes effect on the next request. Writes are atomic (temp file + rename), and the read side falls back to the baseline on a missing or malformed `config.json` and **never throws** — the worst a broken settings file can do is send the switches back to their defaults, never make the guard inactive. **The GUI can write those seven keys and nothing else; detection thresholds always stay in the patch**, so "which file did this fire's threshold come from?" never becomes a question you have to guess at.
+**The core switch is not the same thing as the patch key of the same name, but the two never fight.** `enabled: false` in the patch means "register no hooks at all"; it is read once at load. The `enabled` in the settings file is read **per request** by the stream listener. The test is "**only an explicit `false` turns it off**": a missing key means "as shipped", i.e. on — so an older `config.json` can never be misread as a shutdown. **Saving needs no restart**: `config.json` overrides the patch **key by key**, and every read folds again, so the change takes effect on the next request. Writes are atomic (temp file + rename), and the read side falls back to the baseline on a missing or malformed `config.json` and **never throws** — the worst a broken settings file can do is send the switches back to their defaults, never make the guard inactive. **The GUI can write those eight keys and nothing else; detection thresholds always stay in the patch**, so "which file did this fire's threshold come from?" never becomes a question you have to guess at.
 
 What each switch does, and what it costs:
 
 - **Automatic recovery** (`recovery.*`). After the guard aborts a stream, it appends a corrective message to the session and retries the same step. **Why the message has to come first**: a retry re-sends **the identical request** (`buildRequest` re-derives messages from the session log, and the aborted `assistant/attempt` does not take part), so a bare retry with no new message necessarily reproduces the same loop. The retry budget is counted **per step** (`sessionId:turn:step`) — per session would disable the arm forever after one bad turn, per attempt would make `maxRetries` meaningless. The message carries the **producer's own `source.kind`** (session format v4 rejects `kind: "plugin"`), which has the side effect that the chat UI renders it as a context note rather than a user bubble. Any internal failure in this arm falls through to `next()`, so a failure stays as terminal as it would be without the plugin.
 - **Lower reasoning effort** (`effort.*`). Writes the request's `reasoningEffort` back at the chosen level. This is the arm that addresses the **cause** — repetition is a symptom of too high an effort level, and the guard itself only mitigates the symptom — so if your provider offers a lower level, this arm is more fundamental than the guard. It has to run outside `dsh-agent`'s own `agent/request` listener (the core re-derives provider / model / `reasoningEffort` and drops whatever we set), so it registers with `{ prepend: true }` and writes back after `next()`.
+- **Notify on abort** (`notify.enabled`). Every time the guard aborts a stream, a `Toast` appears in the corner of the window naming the rule that fired and its measured value. It **changes nothing sent to the provider**, and changes neither the sender nor the content of the corrective message — it only says out loud that an abort just happened. The host half adds an SSE route, `GET /reasoning-loop-guard/events` (behind the same loopback/same-origin fence as the log route, and `403` for the same reasons), which pushes one `{"type":"fire","record":…}` frame per fire; the web half opens an `EventSource` on it. **Why not poll the journal**: either the interval is short enough to be a request every second, or it is long enough that the user attributes the abort to something else. **Why the channel is not the journal**: the notice must still go out when the journal is off or its write failed — the journal is a record afterwards, this is a signal at the time. The switch is **re-read on every fire**, so changing it while the page sits open takes effect immediately.
 - **Strip past thinking** (`stripHistory.enabled`). The DeepSeek adapter passes historical assistant messages' `reasoning` back as wire-level `thinking` blocks, so on turn *n* the model reads its own thinking from turns 1..n-1 — including the sentence that opened the loop ("let me verify once more") — and replaying that history also inflates the prompt prefix and hurts KV-cache reuse. **The boundary is drawn at the last genuine user turn**: reasoning before it is history and is dropped, reasoning after it belongs to the active turn and is kept. Getting this wrong is not a cosmetic bug — DeepSeek rejects a thinking request whose active-turn reasoning was removed (`The reasoning_content in the thinking mode must be passed back to the API.`), and DSH delivers tool results as `user`-role messages, so the naive "last user message" boundary lands in the middle of a tool loop and strips the active turn. **Its cost should be stated plainly**: the request object handed to `llm/stream` is frozen and `next()` takes no arguments, so changing `messages` means re-entering the runtime with a new options object — and that object is not in the `AGENT_LOOP_REQUESTS` weak set, so `dsh-agent-loop`'s "request still matches what the session log derives" invariant is skipped for it. **That is precisely why it defaults to off**, and why this arm only ever removes content, never invents it.
 
 ## Fire journal, the GUI log panel, and the `reasoning_loop_log` tool
@@ -197,11 +217,12 @@ Two halves, both shipped in this package:
 | File | Role |
 | --- | --- |
 | [`lib/log-route.js`](lib/log-route.js) | Registers `GET /reasoning-loop-guard/log` on the host's `webServer`, returning `{ path, enabled, version, settings, stats, total, matched, entries }`; supports `limit` / `rule` / `sessionId` / `since`, and `POST` accepts two explicit mutations only — `{"action":"clear"}` and `{"action":"set","patch":{…}}` (both destructive, and deliberately **not** reachable by a link or a prefetch). |
-| [`lib/client.js`](lib/client.js) | A hand-written lazy-CJS bundle (**no build step**) that registers the `plugins.bundle.config` slot keyed by package name and renders the card. At runtime it `require`s exactly two platform seed words: `react` and `@deepseek-ai/dsh-client-ui-primitives`. |
+| [`lib/events.js`](lib/events.js) | The in-process fire broadcast plus the `GET /reasoning-loop-guard/events` SSE endpoint the corner notice subscribes to. A subscriber that throws only removes itself; disposing the route closes every connection it holds. |
+| [`lib/client.js`](lib/client.js) | A hand-written lazy-CJS bundle (**no build step**) that registers the `plugins.bundle.config` slot keyed by package name and renders the card, and mounts a `Toast` in the `shell.overlay` slot that exists only while a fire is showing. At runtime it `require`s exactly two platform seed words: `react` and `@deepseek-ai/dsh-client-ui-primitives`. |
 
-**The route carries its own same-origin fence.** The host's `webServer` provides no authentication, so the plugin writes one: a non-loopback `Host`, `Sec-Fetch-Site: cross-site`, or an `Origin` that does not match `Host` all get `403`. Request bodies are capped at 16 KiB (beyond that: `413` and a dropped socket), and any method other than `GET`/`POST` gets `405`.
+**Both routes carry their own same-origin fence.** The host's `webServer` provides no authentication, so the plugin writes one: a non-loopback `Host`, `Sec-Fetch-Site: cross-site`, or an `Origin` that does not match `Host` all get `403`. The log route caps request bodies at 16 KiB (beyond that: `413` and a dropped socket) and answers any method other than `GET`/`POST` with `405`; the event route accepts `GET`/`HEAD` only.
 
-> If your host provides no `webServer` service at all, `ctx.inject(["webServer"], …)` **silently skips** route registration and the guard itself keeps working. That is deliberate: a diagnostic panel should never be able to make the guard inactive.
+> If your host provides no `webServer` service at all, `ctx.inject(["webServer"], …)` **silently skips** registering either route and the guard itself keeps working. That is deliberate: neither a diagnostic panel nor a notice should ever be able to make the guard inactive.
 
 Every time the guard fires it appends one JSON line to `$DSH_HOME/dsh-reasoning-loop-guard/fires.jsonl`:
 
@@ -272,18 +293,19 @@ Both are read by that plugin as "**on unless set**" (it only treats `0` / `false
 npm test
 ```
 
-Eight suites, all of which must pass:
+Nine suites, all of which must pass:
 
 | Suite | What it covers |
 | --- | --- |
-| [`test/test-guard.mjs`](test/test-guard.mjs) | Detector calibration across six chunk sizes, separation margins, `guardStream` protocol conformance (exactly one terminating `finish`, early stop, aborted-signal handling, healthy streams untouched), message rendering. |
+| [`test/test-guard.mjs`](test/test-guard.mjs) | Detector calibration across six chunk sizes, separation margins, `guardStream` protocol conformance (exactly one terminating `finish`, early stop, aborted-signal handling, healthy streams untouched), message rendering, and the three "co-occurrence is not a loop" class judgments (a code line is never reported, a non-equidistant block counts as 2, a non-primitive unit is not periodic). |
 | [`test/test-journal.mjs`](test/test-journal.mjs) | `$DSH_HOME` resolution, preview clipping, record shape, parse tolerance, filtering, `stats` aggregation, rotation, and the guarantee that journal failures never throw. |
 | [`test/test-settings.mjs`](test/test-settings.mjs) | The feature switches' two load-bearing properties: a save is visible to the **next** `get()`, and a malformed file behaves like a fresh install rather than a crash. |
 | [`test/test-recovery.mjs`](test/test-recovery.mjs) | The recovery arm's contract is all about **when** it acts: it stands aside when disabled, honours only the guard's own failures, must append a well-formed message before returning `{kind:"retry"}`, must exhaust its per-step budget, and must fall through to `next()` on any internal fault. |
 | [`test/test-strip.mjs`](test/test-strip.mjs) | The strip arm's boundary decisions — every check in it exists because removing the active turn's reasoning gets the request rejected by DeepSeek. |
-| [`test/test-card.mjs`](test/test-card.mjs) | The log route's same-origin fence decisions, method and query handling, limits and the disabled state, registration through the service, plus the client bundle's protocol shape and the card's pure functions. |
+| [`test/test-events.mjs`](test/test-events.mjs) | The fire broadcast and the SSE endpoint: a subscriber that throws only removes itself, the same-origin fence and method limits, unbinding on disconnect, the switch **re-read on every fire** (changing it while the page is open takes effect at once), and closing held connections when the route is disposed. |
+| [`test/test-card.mjs`](test/test-card.mjs) | The log route's same-origin fence decisions, method and query handling, limits and the disabled state, registration through the service, plus the client bundle's protocol shape, the card's pure functions, and the corner notice's frame parsing and key replay. |
 | [`test/smoke/smoke.mjs`](test/smoke/smoke.mjs) | The real `apply()` driven through a stub host: config validation, exactly one `llm/stream` listener registered globally, tool registration, the tool's behaviour end to end, and **the optional injects' service names** (it must ask for `agents` and never for the singular `agent`). |
-| [`test/smoke/real-protocol.mjs`](test/smoke/real-protocol.mjs) | The real `@deepseek-ai/dsh-llm` invariant gate, asserting the guard's output is a *legal* stream. |
+| [`test/smoke/real-protocol.mjs`](test/smoke/real-protocol.mjs) | The real `@deepseek-ai/dsh-llm` invariant gate, asserting the guard's output is a *legal* stream (on a build with no standalone `invariant.js`, this check degrades to a skip rather than a failure). |
 
 The smoke suites resolve `@deepseek-ai/*` to the app and profile install locations through [`test/smoke/resolve-hook.mjs`](test/smoke/resolve-hook.mjs), so the host-side half can be exercised without launching DSH.
 
@@ -300,7 +322,7 @@ The guard's thresholds were calibrated against a real failure, but that session'
 - **The original calibration was 177 samples from a single session — and it has a known blind spot.** All of them are prose and none of them is the "reasoning while writing code" shape, so the `0/166` measured there **cannot** be extrapolated. The `line-repeat` / `block-repeat` thresholds were later recalibrated on thousands of real streams (see "Why `line-repeat` needs three conditions"). If false positives still appear in practice, raise `lineShare` (the proportion floor) or `minUnits` / `kgramThreshold` first; if they come from decoration (say your model draws very wide diagrams), raise `fillerRun`. **If they come from code or markup, that means `CODE_LINE`'s marker set is not wide enough — that is a signal to change the code, not the thresholds.**
 - **A stream emitting only decoration is caught by the last-resort rule, and its bar is tunable.** The default 400 already sits above the widest legitimate formatting measured (151), but raise it if your scenario draws wider.
 - **The guard itself only mitigates the symptom.** If your provider offers a lower reasoning effort, that addresses the cause — either turn on the **lower reasoning effort** switch above or lower it directly in your DSH configuration.
-- **The core guard and the three arms have different switch semantics — do not conflate them.** The core guard defaults to **on**; it *is* the plugin. The three arms default to **off**, and each one's cost is spelled out in its own section — `stripHistory` in particular makes `dsh-agent-loop`'s "request still matches what the session log derives" invariant be skipped, and `recovery` appends a message to the session.
+- **The core guard and the three arms have different switch semantics — do not conflate them.** The core guard defaults to **on**; it *is* the plugin. The abort notice defaults to **on** too, because it only puts a line on screen. The three arms default to **off**, and each one's cost is spelled out in its own section — `stripHistory` in particular makes `dsh-agent-loop`'s "request still matches what the session log derives" invariant be skipped, and `recovery` appends a message to the session.
 - **Cross-talk with a third-party plugin is fixed by the namespace, but this class of collision cannot be eliminated in principle.** If it does recur, `DSH_REASONING_LOOP_GUARD=0` / `DSH_REASONING_LOOP_AUTO_RESUME=0` are an immediate stopgap (see "Key design decisions").
 
 ## License

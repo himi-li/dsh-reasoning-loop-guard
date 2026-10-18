@@ -34,13 +34,15 @@ DSH 随后走它既有的 provider 错误路径：本步以一个可见错误结
 
 | 判据 | 定义 | 实测峰值（11 正 / 166 负） | 阈值 |
 | --- | --- | --- | --- |
-| `periodic-run`（主判据） | 缓冲区尾部存在 ≥ `minUnits` 个**连续相同的单元**，周期 p ∈ [8, 400] | 正 **0..8**，负 **0..2** | 4 |
-| `block-repeat` | 同一 `blockMin` 字符的块在窗口内出现 ≥ `blockCount` 次（跨行、跨格式） | 正 **0..2**，负 **0..0** | 4 |
-| `line-repeat` | 同一**散文**行（≥ `lineMin` 字符）出现 ≥ `lineCount` 次，**且**占窗口比例 ≥ `lineShare` | 正 **2..2**，负 **0..0** | 3 + 10% |
+| `periodic-run`（主判据） | 缓冲区尾部存在 ≥ `minUnits` 个**连续相同的单元**，周期 p ∈ [8, 400]；单元本身是更短串的重复（`xxxx…`、`abab…`）时不算 | 正 **0..8**，负 **0..2** | 4 |
+| `block-repeat` | 同一 `blockMin` 字符的块在窗口内出现 ≥ `blockCount` 次，**且相邻两次的间距全部相等** | 正 **0..2**，负 **0..0** | 4 |
+| `line-repeat` | 同一**散文**行（≥ `lineMin` 字符）出现 ≥ `lineCount` 次，**且**占窗口比例 ≥ `lineShare`；代码 / 标记 / diff 行被测量但从不被报告 | 正 **2..2**，负 **0..0** | 3 + 10% |
 | `kgram-repeat` | 末尾 `kgram` 个字符在窗口内出现 ≥ `kgramThreshold` 次 | 正 **1..5**，负 **1..1** | 12 |
 | `filler-run`（兜底） | **原始**文本末尾连续 ≥ `fillerRun` 个装饰字符（空白 / 标点 / 符号） | 见下文「装饰不是复读」 | 400 |
 
 五条判据是**析取**的：正样本不必触发某一条特定的判据，只要够到任意一条阈值即可。记录在案的 11 次故障里，**2 次由 `periodic-run` 拦下、9 次由 `line-repeat` 拦下**；负样本的最佳比值只到 **0.50**，正样本最低 **1.00**，分离点在 1.00。**只测量 `reasoning-delta`，绝不测量 `block-end`**——后者会重放整个块的文本，等于人为制造出它正要寻找的那种重复。**也绝不测量 `text-delta`**：正常的长输出（表格、代码）本来就可能重复，漏报好过误杀。
+
+> **一条窗口内的共现不是复读。** 上面三条计数判据最初只看「窗口里出现了几次」。一次真实会话里因此连续迎来 5 次误报，全是这个错误：模型在推理里反复引用同一行 Java 语句、几条并列的 `runcode` 命令共享同一段前缀、以及它真在逐字打出 36 个 `x` 的图块。真正的复读是**时间里**的重复——等距推进，或一直延续到尾部。判别量因此分成几层，见下文。
 
 ### 为什么 `line-repeat` 要三个条件
 
@@ -75,6 +77,20 @@ if (e.isKeyboardEvent()) {                    （普通引用，出现三次）
 在**本机 3,862 条真实推理流**上复核：这条修复去掉该次误报与另一条同形态误报（从 HTML 里引用的 `<p align="center">` 出现三次），其余**零变化**——夹具仍是 166 健康 0 误报 / 11 退化全命中，语料里两条 `line-repeat` 触发仍是同样的真循环（`count` 30 与 19，未变）。标记集刻意取窄：花括号、标记语言标签、行首 diff 标记，这些都不会出现在普通散文里；而更宽的做法（排除任何括号或运算符）会连 `The config (see above) is wrong.` 一起压制，等于让规则对真实的散文口头禅失明。
 
 顺带修掉一个语义缺陷：`line-repeat` / `block-repeat` 原来在第一个达标的单元上就返回，所以日志里的 `count` 永远等于阈值本身，从未反映真实重复次数。现在都改为全扫描取最大重复单元，`count` 因此是真实值。
+
+### 一次窗口不是一个循环：第二层判别
+
+2026-10-18 的五次误报各自暴露出同一个前提错误，但需要三个不同的答案：
+
+| 现场 | 旧判据看到的 | 实际发生的事 | 修法 |
+| --- | --- | --- | --- |
+| 推理里四次引用同一行 Java 语句 `StarSystemAPI sys = (StarSystemAPI)Global…getContainingLocation();` | `line-repeat`：`count=4`、`share=10.2%`，刚过两条地板 | 四条引用散布在整个窗口里，间距 **424 / 602 / 259**，毫无节律 | 把该行认成代码——`CODE_LINE` 加上**行尾分号**与**点号调用链** |
+| 四条并列的 `runcode` 命令（加行星 / 加小行星带 / 加星云 / 加行星环）共享读当前星系的前缀 | `block-repeat`：同一 100 字符块出现 4 次 | 间距 **1130 / 359 / 742**，是并列命令而非复读 | 要求重复块**等距出现**（`count` 改报最长等距链长，原始次数留在 `rawCount`） |
+| 模型在写 6×6 图块的字面量 `"xxxxxxxx…"` | `periodic-run`：`units=4`、`period=8` | 单元 `xxxxxxxx` 本身就是**同一个字符的重复**——它在打字，不是在循环 | 单元是更短串的整数次重复时直接否决（`isRepeatedUnit`） |
+
+三条都是**分类判断**，不是抬阈值。抬阈值已经被实测排除：`lineCount` 要从 3 提到 6 才挡得住第一例，而 6 已在真循环占据的区间内。
+
+复核口径：在同一批语料上（chunk 7 / 41 / 200 三档各跑一遍），三处修改前后的**触发集合逐字节相同**（`count` 29 / 19 的两条 `line-repeat`、`periodic-run` 的两条），夹具仍是 166 健康 0 误报 / 11 退化全命中，而五条误报全部转为 inert。
 
 ### 为什么先做归一化
 
@@ -153,6 +169,8 @@ dsh plugin --profile web add github:himi-li/dsh-reasoning-loop-guard
           value: low               # off | low | high | max
         stripHistory:
           enabled: false           # 剥离历史轮的思维链，只留活跃轮
+        notify:
+          enabled: true            # 每次中断后在角落弹一条提示
 ```
 
 | 字段 | 默认值 | 含义 |
@@ -171,21 +189,23 @@ dsh plugin --profile web add github:himi-li/dsh-reasoning-loop-guard
 | `recovery.*` | `false` / `""` / `2` | 中断一次流之后追加纠正消息并重跑同一步；每步最多自动恢复几次（0–10）。 |
 | `effort.*` | `false` / `low` | 按档位回写请求的 `reasoningEffort`：`off` / `low` / `high` / `max`。 |
 | `stripHistory.enabled` | `false` | 剥离历史轮的思维链，只保留活跃轮。 |
+| `notify.enabled` | `true` | 每次中断后，在 web 界面的角落弹一条短提示，说明是哪条判据触发的。 |
 
 `validateConfig()` 会拒绝那些**会静默失效**的配置——`kgram > window`、`minPeriod >= maxPeriod`、`periodTail < 2 * maxPeriod`、`failureCode` 为空、`every` 非正数等等——并在报错信息里点名字段。
 
 ## 功能开关
 
-上表里的 `enabled`、`settingsPath` 与三个开关的六个字段也可以在 **GUI 里改**——`settingsPath` 例外，它只在 patch 里设，GUI 只读显示。在插件页打开本插件，详情页的「触发日志」面板下方有五个区块：**循环守卫**（检测核心）、**自动恢复**、**降低思考强度**、**剥离历史思维链**，以及只读的**配置文件**路径。改完点保存，值写进 `$DSH_HOME/dsh-reasoning-loop-guard/config.json`。
+上表里的 `enabled`、`settingsPath` 与其余开关的七个字段也可以在 **GUI 里改**——`settingsPath` 例外，它只在 patch 里设，GUI 只读显示。在插件页打开本插件，详情页的「触发日志」面板下方有六个区块：**循环守卫**（检测核心）、**自动恢复**、**降低思考强度**、**剥离历史思维链**、**中断时提示**，以及只读的**配置文件**路径。改完点保存，值写进 `$DSH_HOME/dsh-reasoning-loop-guard/config.json`。
 
-**检测核心默认开启，三个可选臂默认关闭。** 核心开关是唯一默认 `true` 的键——它就是插件本身；三条臂都改变了护栏之外的行为，所以默认取保守的一侧。**关掉检测核心，三条臂随之失效**：它们只可能响应守卫自己抛出的失败，而守卫不再观察任何流之后就不会再抛出这种失败。
+**检测核心与中断提示默认开启，三个可选臂默认关闭。** 核心开关是插件本身；提示开关只往屏幕上弹一条提示、不改变任何发给 provider 的内容，所以也默认开着。三条臂都改变了护栏之外的行为，默认取保守的一侧。**关掉检测核心，三条臂随之失效**：它们只可能响应守卫自己抛出的失败，而守卫不再观察任何流之后就不会再抛出这种失败。
 
-**核心开关与 patch 里的同名键不是一回事，但不会互相打架。** patch 里的 `enabled: false` 表示「整插件不注册任何钩子」，只在装载时读一次；设置文件里的 `enabled` 由流监听器**逐请求**读取。判定写成「**显式 `false` 才算关**」：键缺失表示「按出厂设置」，也就是开着——这样旧的 `config.json` 不会被误读成关闭。**保存后不需要重启**：`config.json` 逐键覆盖 patch 配置，每次读取都重新折叠，下一次请求就生效。写入是原子的（临时文件 + rename），读侧对缺失或损坏的 `config.json` 一律回落到基线，**绝不抛异常**——一个写坏的设置文件最多让开关回到默认值，不会让护栏变成 inactive。**GUI 只能写这七个键，检测阈值永远留在 patch 里**，这样「这次触发的阈值到底来自哪个文件」不会变成一个需要猜的问题。
+**核心开关与 patch 里的同名键不是一回事，但不会互相打架。** patch 里的 `enabled: false` 表示「整插件不注册任何钩子」，只在装载时读一次；设置文件里的 `enabled` 由流监听器**逐请求**读取。判定写成「**显式 `false` 才算关**」：键缺失表示「按出厂设置」，也就是开着——这样旧的 `config.json` 不会被误读成关闭。**保存后不需要重启**：`config.json` 逐键覆盖 patch 配置，每次读取都重新折叠，下一次请求就生效。写入是原子的（临时文件 + rename），读侧对缺失或损坏的 `config.json` 一律回落到基线，**绝不抛异常**——一个写坏的设置文件最多让开关回到默认值，不会让护栏变成 inactive。**GUI 只能写这八个键，检测阈值永远留在 patch 里**，这样「这次触发的阈值到底来自哪个文件」不会变成一个需要猜的问题。
 
-三个开关各自的机制与代价：
+四个开关各自的机制与代价：
 
 - **自动恢复**（`recovery.*`）。守卫中断一次流之后，向会话追加一条纠正消息并重跑同一步。**为什么必须先追加消息**：重试会重发**完全相同的请求**（`buildRequest` 从会话日志重新推导，被中断的 `assistant/attempt` 不参与推导），所以不带新消息的裸重试必然复现同一个循环。重试预算按**步**计（`sessionId:turn:step`）——按会话计会让一轮坏掉就永久禁用，按 attempt 计会让 `maxRetries` 失去意义。这条消息带的是**产出方自己的 `source.kind`**（会话格式 v4 拒绝 `kind: "plugin"`），副作用是 chat UI 会把它渲染成上下文注记而不是用户气泡。本臂的任何内部故障都落到 `next()`，失败保持与没有插件时一样终局。
 - **降低思考强度**（`effort.*`）。按档位回写请求的 `reasoningEffort`。这是**针对病因**的一臂——复读是推理档位太高时的症状，护栏本身只缓解症状——所以如果你的 provider 支持更低的档位，这一臂比护栏更根本。它必须跑在 `dsh-agent` 自己的 `agent/request` 监听器之外（核心会重新推导 provider / model / `reasoningEffort` 并丢掉我们设的值），因此用 `{ prepend: true }` 注册并在 `next()` 之后回写。
+- **中断时提示**（`notify.enabled`）。每次守卫中断一条流，在窗口角落弹一条 `Toast`，说明是哪条判据、以及它的测量值。它**不改变任何发给 provider 的东西**，也不改变纠正消息的发送者或内容——只是把「刚刚发生过一次中断」这件事说出来。宿主侧新增一条 SSE 路由 `GET /reasoning-loop-guard/events`（走的是与日志路由同一道同源回环栅栏，被拒时同样 403），触发时推一帧 `{"type":"fire","record":…}`；web 半开一个 `EventSource` 订阅它。**为什么不是轮询日志**：要么间隔短到每秒一个请求，要么延迟久到用户会把这次中断归到别处；**为什么通道不是日志**：日志关掉或写失败时提示照样要发——日志是事后记录，这是实时信号。开关**每次触发时重新读取**，所以页面开着不动，改设置也立刻生效。
 - **剥离历史思维链**（`stripHistory.enabled`）。DeepSeek 适配器会把历史 assistant 消息的 `reasoning` 作为线上 `thinking` 块回传，于是第 n 轮模型会读到 1..n-1 轮自己的思维链（包括开启循环的那句「让我再验证一遍」），回放历史还会撑大 prompt 前缀、损害 KV 缓存复用。**边界按「最后一个真实用户轮」切**：之前的 reasoning 是历史、丢弃，之后属于活跃轮、保留。搞错不是装饰性 bug——DeepSeek 会直接拒绝移除了活跃轮 reasoning 的 thinking 请求（`The reasoning_content in the thinking mode must be passed back to the API.`），而 DSH 把工具结果作为 `user` 角色消息投递，所以朴素的「最后一条 user 消息」边界会落在工具循环中间并剥掉活跃轮。**它的代价要明说**：交给 `llm/stream` 的 request 对象是冻结的且 `next()` 不接参数，改 `messages` 只能带着新 options 对象重入 runtime，而该新对象不在 `AGENT_LOOP_REQUESTS` weak set 里，于是 `dsh-agent-loop` 的「请求仍与会话日志推导一致」不变量对它被跳过——**这正是它默认关闭的原因**，也是这一臂只删内容、绝不发明内容的原因。
 
 ## 触发日志、GUI 面板与 `reasoning_loop_log`
@@ -197,11 +217,12 @@ dsh plugin --profile web add github:himi-li/dsh-reasoning-loop-guard
 | 文件 | 作用 |
 | --- | --- |
 | [`lib/log-route.js`](lib/log-route.js) | 向宿主的 `webServer` 注册 `GET /reasoning-loop-guard/log`，返回 `{ path, enabled, version, settings, stats, total, matched, entries }`；支持 `limit` / `rule` / `sessionId` / `since` 查询，`POST` 只接受 `{"action":"clear"}` 与 `{"action":"set","patch":{…}}` 两个显式变更（都是破坏性的，**刻意不能由链接或预取触发**）。 |
-| [`lib/client.js`](lib/client.js) | 手写的惰性 CJS bundle（**零构建步骤**），以包名为键注册 `plugins.bundle.config` 槽位并渲染卡片；运行时只向平台种子表 `require` 两个词：`react` 与 `@deepseek-ai/dsh-client-ui-primitives`。 |
+| [`lib/events.js`](lib/events.js) | 进程内的触发广播 + `GET /reasoning-loop-guard/events` 的 SSE 端点，供角落那条提示订阅。订阅者抛异常只摘掉它自己；路由被销毁时一并断开它持有的连接。 |
+| [`lib/client.js`](lib/client.js) | 手写的惰性 CJS bundle（**零构建步骤**），以包名为键注册 `plugins.bundle.config` 槽位并渲染卡片，另在 `shell.overlay` 槽位挂一个只在触发时出现的 `Toast`；运行时只向平台种子表 `require` 两个词：`react` 与 `@deepseek-ai/dsh-client-ui-primitives`。 |
 
-**路由自带同源栅栏。** 宿主的 `webServer` 不提供任何鉴权，所以这道栅栏由插件自己写：非回环 `Host`、`Sec-Fetch-Site: cross-site`、或与 `Host` 不同源的 `Origin`，一律 `403`；请求体上限 16 KiB（超出回 `413` 并断开），非 `GET`/`POST` 回 `405`。
+**两条路由都自带同源栅栏。** 宿主的 `webServer` 不提供任何鉴权，所以这道栅栏由插件自己写：非回环 `Host`、`Sec-Fetch-Site: cross-site`、或与 `Host` 不同源的 `Origin`，一律 `403`；日志路由的请求体上限 16 KiB（超出回 `413` 并断开），非 `GET`/`POST` 回 `405`；事件路由只接受 `GET`/`HEAD`。
 
-> 若你的宿主根本没提供 `webServer` 服务，`ctx.inject(["webServer"], …)` 会**静默跳过**路由注册，护栏本体照常工作。这是刻意的：一个诊断面板不该让护栏变成 inactive。
+> 若你的宿主根本没提供 `webServer` 服务，`ctx.inject(["webServer"], …)` 会**静默跳过**两条路由的注册，护栏本体照常工作。这是刻意的：一个诊断面板与一条提示都不该让护栏变成 inactive。
 
 护栏每触发一次，就向 `$DSH_HOME/dsh-reasoning-loop-guard/fires.jsonl` 追加一行 JSON：
 
@@ -267,18 +288,19 @@ dsh plugin --profile web add github:himi-li/dsh-reasoning-loop-guard
 npm test
 ```
 
-八套测试，必须全部通过：
+九套测试，必须全部通过：
 
 | 套件 | 覆盖内容 |
 | --- | --- |
-| [`test/test-guard.mjs`](test/test-guard.mjs) | 六种 chunk 大小下的检测器定标、分离度、`guardStream` 协议一致性（恰好一个终止 `finish`、提前停止、已中止信号的处理、健康流不被改动）、消息渲染。 |
+| [`test/test-guard.mjs`](test/test-guard.mjs) | 六种 chunk 大小下的检测器定标、分离度、`guardStream` 协议一致性（恰好一个终止 `finish`、提前停止、已中止信号的处理、健康流不被改动）、消息渲染，以及「共现不是复读」的三条分类断言（代码行不被报告、非等距的块只算 2、非原始单元不算周期）。 |
 | [`test/test-journal.mjs`](test/test-journal.mjs) | `$DSH_HOME` 解析、preview 截断、记录形状、解析容错、过滤、`stats` 聚合、轮转，以及「日志故障永不抛异常」这条保证。 |
 | [`test/test-settings.mjs`](test/test-settings.mjs) | 功能开关的两条承重性质：保存对**下一次** `get()` 可见，以及坏文件表现得像全新安装、绝不像崩溃。 |
 | [`test/test-recovery.mjs`](test/test-recovery.mjs) | 自动恢复臂的契约全在**何时**行动：禁用时让路、只认护栏自己的失败、返回 `{kind:"retry"}` 前必须追加良构消息、必须耗尽每步预算、任何内部故障都要落到 `next()`。 |
 | [`test/test-strip.mjs`](test/test-strip.mjs) | 剥离历史思维链臂的边界判定——每条检查都因「剥掉活跃轮 reasoning 会被 DeepSeek 拒绝」这一失败模式而存在。 |
-| [`test/test-card.mjs`](test/test-card.mjs) | 日志路由的同源栅栏判定、方法与查询参数、上限与关闭态、注册走服务，以及客户端 bundle 的协议形态与卡片的纯函数。 |
+| [`test/test-events.mjs`](test/test-events.mjs) | 触发广播与 SSE 端点：一个抛异常的订阅者只摘掉自己、同源栅栏与方法限制、断开时解绑、开关**逐次重读**（页面开着改设置立刻生效）、销毁路由时连同连接一起断开。 |
+| [`test/test-card.mjs`](test/test-card.mjs) | 日志路由的同源栅栏判定、方法与查询参数、上限与关闭态、注册走服务，以及客户端 bundle 的协议形态、卡片的纯函数，和角落提示的帧解析与 key 重播。 |
 | [`test/smoke/smoke.mjs`](test/smoke/smoke.mjs) | 用桩宿主驱动真实的 `apply()`：配置校验、全局只注册一个 `llm/stream` 监听器、工具注册、端到端行为，以及**可选注入的服务名**（必须索要 `agents`、不得索要单数 `agent`）。 |
-| [`test/smoke/real-protocol.mjs`](test/smoke/real-protocol.mjs) | 真实的 `@deepseek-ai/dsh-llm` 不变量校验门，断言护栏的输出是一条**合法**的流。 |
+| [`test/smoke/real-protocol.mjs`](test/smoke/real-protocol.mjs) | 真实的 `@deepseek-ai/dsh-llm` 不变量校验门，断言护栏的输出是一条**合法**的流（该构建若没有独立的 `invariant.js`，这一项自动降级为 skip 而不是失败）。 |
 
 两个 smoke 套件通过 [`test/smoke/resolve-hook.mjs`](test/smoke/resolve-hook.mjs) 把 `@deepseek-ai/*` 解析到 app 与 profile 的安装位置，因此不必启动 DSH 就能验证宿主侧的那一半。
 
@@ -295,7 +317,7 @@ npm test
 - **定标样本曾是单个会话的 177 条，样本量偏小——已知有盲区。** 它全是散文，不含「边写代码边推理」这一形态，因此在那上面报出的 0/166 误报**不能**外推；`line-repeat` / `block-repeat` 的阈值后来改用数千条真实语料重新定标（见「为什么 `line-repeat` 要三个条件」）。若实践中仍出现误报，优先调高 `lineShare`（比例地板）或 `minUnits` / `kgramThreshold`；若误报来自装饰（比如你的模型习惯画很宽的图），调高 `fillerRun`。若误报来自**代码或标记语言**，说明 `CODE_LINE` 的标记集还不够——那是要改代码、而不是调阈值的信号。
 - **只输出装饰的流会被兜底判据拦下，阈值可调。** 默认 400 已高于实测最宽合法排版（151），但如果你的场景里合法图形更长，把它调高即可。
 - **护栏本身只缓解症状。** 如果你的 provider 支持更低的推理档位，那才是针对病因——可以打开**降低思考强度**开关，或者在你的 DSH 配置里直接调低。
-- **检测核心与三个功能臂的开关语义不同，别混淆。** 检测核心默认**开启**，它就是插件本身；三条臂默认**关闭**，代价在各自小节里写明——尤其 `stripHistory` 会让 `dsh-agent-loop` 的「请求仍与会话日志推导一致」不变量被跳过，`recovery` 会向会话追加一条消息。
+- **检测核心与三个功能臂的开关语义不同，别混淆。** 检测核心默认**开启**，它就是插件本身；中断提示也默认**开启**，它只往屏幕上写一行；三条臂默认**关闭**，代价在各自小节里写明——尤其 `stripHistory` 会让 `dsh-agent-loop` 的「请求仍与会话日志推导一致」不变量被跳过，`recovery` 会向会话追加一条消息。
 - **失败码与第三方插件的串扰已由命名空间修掉，但同类冲突无法从原理上根除。** 又遇到串扰时可先用 `DSH_REASONING_LOOP_GUARD=0` / `DSH_REASONING_LOOP_AUTO_RESUME=0` 应急（见「关键设计决策」）。
 
 ## 许可证
